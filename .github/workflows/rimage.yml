@@ -49,50 +49,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-
-#
-#Types: deb
-#URIs: https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports
-#Suites: noble noble-updates noble-backports
-#Components: main restricted universe multiverse
-#Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
-
-# 默认注释了源码镜像以提高 apt update 速度，如有需要可自行取消注释
-# Types: deb-src
-# URIs: https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports
-# Suites: noble noble-updates noble-backports
-# Components: main restricted universe multiverse
-# Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
-
-# 以下安全更新软件源包含了官方源与镜像站配置，如有需要可自行修改注释切换
-#Types: deb
-#URIs: http://ports.ubuntu.com/ubuntu-ports/
-#Suites: noble-security
-#Components: main restricted universe multiverse
-#Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
-
-# Types: deb-src
-# URIs: http://ports.ubuntu.com/ubuntu-ports/
-# Suites: noble-security
-# Components: main restricted universe multiverse
-# Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
-#
-#
       - name: set up ubuntu multiarch
         if: startsWith(matrix.target, 'aarch64')
         run: |
-          sudo cat /etc/apt/sources.list
           sudo cat /etc/apt/sources.list.d/ubuntu.sources
-          readonly DISTRO_CODENAME=jammy
+          readonly DISTRO_CODENAME=noble
           sudo dpkg --add-architecture "${{ matrix.target-apt-arch }}"
-          sudo touch /etc/apt/sources.list.d/arm64_mirror.sources
-          sudo sed -i "s/^deb http/deb [arch=$(dpkg-architecture -q DEB_HOST_ARCH)] http/" /etc/apt/sources.list
-          sudo sed -i "s/^deb mirror/deb [arch=$(dpkg-architecture -q DEB_HOST_ARCH)] mirror/" /etc/apt/sources.list
-          for suite in '' '-updates' '-backports' '-security'; do
-            echo "deb [arch=${{ matrix.target-apt-arch }}] http://ports.ubuntu.com/ $DISTRO_CODENAME$suite main universe multiverse" | \
-            sudo tee -a /etc/apt/sources.list >/dev/null
-          sudo cat /etc/apt/sources.list
-          done
+          sudo tee /etc/apt/sources.list.d/arm64_mirror.sources > /dev/null <<EOF
+          Types: deb
+          URIs: http://ports.ubuntu.com/ubuntu-ports
+          Suites: ${DISTRO_CODENAME} ${DISTRO_CODENAME}-updates ${DISTRO_CODENAME}-backports
+          Components: main restricted universe multiverse
+          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+          EOF
           sudo apt-get update
 
       - name: install musl development files
