@@ -4,9 +4,8 @@ on:
   push:
     branches:
       - main
-      - dev
     paths-ignore:
-      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/**"
       - ".gitignore"
       - "**.md"
       - "LICENSE**"
@@ -50,19 +49,16 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: set up ubuntu multiarch
-        if: startsWith(matrix.target, 'aarch64')
+        if: startsWith(matrix.os, 'ubuntu') && matrix.target-apt-arch != 'amd64'
         run: |
-          sudo cat /etc/apt/sources.list.d/ubuntu.sources
           readonly DISTRO_CODENAME=noble
           sudo dpkg --add-architecture "${{ matrix.target-apt-arch }}"
-          sudo tee /etc/apt/sources.list.d/arm64_mirror.sources > /dev/null <<EOF
-          Types: deb
-          URIs: http://ports.ubuntu.com/ubuntu-ports
-          Suites: ${DISTRO_CODENAME} ${DISTRO_CODENAME}-updates ${DISTRO_CODENAME}-backports
-          Components: main restricted universe multiverse
-          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
-          EOF
-          sudo apt-get update
+          sudo sed -i "s/^deb http/deb [arch=$(dpkg-architecture -q DEB_HOST_ARCH)] http/" /etc/apt/sources.list
+          sudo sed -i "s/^deb mirror/deb [arch=$(dpkg-architecture -q DEB_HOST_ARCH)] mirror/" /etc/apt/sources.list
+          for suite in '' '-updates' '-backports' '-security'; do
+            echo "deb [arch=${{ matrix.target-apt-arch }}] http://ports.ubuntu.com/ $DISTRO_CODENAME$suite main universe multiverse" | \
+            sudo tee -a /etc/apt/sources.list >/dev/null
+          done
 
       - name: install musl development files
         if: endsWith(matrix.target, '-musl')
@@ -183,7 +179,7 @@ jobs:
           sudo apt-get -yq update
           sudo apt-get -yq install ninja-build meson nasm
 
-      - uses: Swatinem/rust-cache@v2.7.7
+      - uses: Swatinem/rust-cache@v2
 
       - name: install rust toolchain (rust-toolchain-reborn)
         uses: crusty-pie/toolchain@v1.0.8
