@@ -1,9 +1,8 @@
-name: rimage
+name: dev_test
 
 on:
   push:
     branches:
-      - main
       - dev
     paths-ignore:
       - ".github/**"
