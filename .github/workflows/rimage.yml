@@ -63,6 +63,7 @@ jobs:
           for suite in '' '-updates' '-backports' '-security'; do
             echo "deb [arch=${{ matrix.target-apt-arch }}] http://ports.ubuntu.com/ $DISTRO_CODENAME$suite main universe multiverse" | \
             sudo tee -a /etc/apt/sources.list >/dev/null
+          sudo sed -r 's/(.*?)\[arch=arm64\]\s(.*?)security(.*)/\1\2security\3/g' /etc/apt/sources.list
           sudo cat /etc/apt/sources.list
           done
 
