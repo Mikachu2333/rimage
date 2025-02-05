@@ -49,11 +49,43 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+
+#
+#Types: deb
+#URIs: https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports
+#Suites: noble noble-updates noble-backports
+#Components: main restricted universe multiverse
+#Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+
+# 默认注释了源码镜像以提高 apt update 速度，如有需要可自行取消注释
+# Types: deb-src
+# URIs: https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports
+# Suites: noble noble-updates noble-backports
+# Components: main restricted universe multiverse
+# Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+
+# 以下安全更新软件源包含了官方源与镜像站配置，如有需要可自行修改注释切换
+#Types: deb
+#URIs: http://ports.ubuntu.com/ubuntu-ports/
+#Suites: noble-security
+#Components: main restricted universe multiverse
+#Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+
+# Types: deb-src
+# URIs: http://ports.ubuntu.com/ubuntu-ports/
+# Suites: noble-security
+# Components: main restricted universe multiverse
+# Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+#
+#
       - name: set up ubuntu multiarch
-        if: startsWith(matrix.os, 'ubuntu') && matrix.target-apt-arch != 'amd64'
+        if: startsWith(matrix.target, 'aarch64')
         run: |
+          sudo cat /etc/apt/sources.list
+          sudo cat /etc/apt/sources.list.d/ubuntu.sources
           readonly DISTRO_CODENAME=jammy
           sudo dpkg --add-architecture "${{ matrix.target-apt-arch }}"
+          sudo touch /etc/apt/sources.list.d/arm64_mirror.sources
           sudo sed -i "s/^deb http/deb [arch=$(dpkg-architecture -q DEB_HOST_ARCH)] http/" /etc/apt/sources.list
           sudo sed -i "s/^deb mirror/deb [arch=$(dpkg-architecture -q DEB_HOST_ARCH)] mirror/" /etc/apt/sources.list
           for suite in '' '-updates' '-backports' '-security'; do
@@ -182,7 +214,7 @@ jobs:
           sudo apt-get -yq update
           sudo apt-get -yq install ninja-build meson nasm
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.7.7
 
       - name: install rust toolchain (rust-toolchain-reborn)
         uses: crusty-pie/toolchain@v1.0.8
