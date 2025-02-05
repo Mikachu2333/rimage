@@ -1,20 +1,25 @@
-name: dev_test
+name: build preview
 
 on:
   push:
     branches:
+      - main
       - dev
-    paths-ignore:
-      - ".github/**"
-      - ".gitignore"
-      - "**.md"
-      - "LICENSE**"
+    path-contain:
+      - "src/**"
+      - "Cargo.toml"
+      - ".github/workflows/**"
+      - "build.rs"
+      - "config.toml"
+      - ".cargo/**"
   pull_request:
-    paths-ignore:
-      - ".github/**"
-      - ".gitignore"
-      - "**.md"
-      - "LICENSE**"
+    path-contain:
+      - "src/**"
+      - "Cargo.toml"
+      - ".github/workflows/**"
+      - "build.rs"
+      - "config.toml"
+      - ".cargo/**"
     types:
       - opened
       - synchronize
