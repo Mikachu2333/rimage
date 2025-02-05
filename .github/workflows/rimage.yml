@@ -59,6 +59,7 @@ jobs:
           for suite in '' '-updates' '-backports' '-security'; do
             echo "deb [arch=${{ matrix.target-apt-arch }}] http://ports.ubuntu.com/ $DISTRO_CODENAME$suite main universe multiverse" | \
             sudo tee -a /etc/apt/sources.list >/dev/null
+          sudo cat /etc/apt/sources.list
           done
           sudo apt-get update
 
