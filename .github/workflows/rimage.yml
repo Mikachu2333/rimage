@@ -57,15 +57,14 @@ jobs:
         if: startsWith(matrix.os, 'ubuntu') && matrix.target-apt-arch != 'amd64'
         run: |
           readonly DISTRO_CODENAME=noble
-          sudo dpkg --add-architecture armhf
           sudo dpkg --add-architecture arm64
           sudo touch /etc/apt/sources.list.d/arm-cross-compile-sources.list
           sudo tee /etc/apt/sources.list.d/arm-cross-compile-sources.list > /dev/null <<EOF
-          deb [arch=armhf,arm64] http://ports.ubuntu.com/ ${DISTRO_CODENAME}$ main restricted
-          deb [arch=armhf,arm64] http://ports.ubuntu.com/ ${DISTRO_CODENAME}$-updates main restricted universe multiverse
-          deb [arch=armhf,arm64] http://ports.ubuntu.com/ ${DISTRO_CODENAME}$ universe
-          deb [arch=armhf,arm64] http://ports.ubuntu.com/ ${DISTRO_CODENAME}$ multiverse
-          deb [arch=armhf,arm64] http://ports.ubuntu.com/ ${DISTRO_CODENAME}$-backports main restricted universe multiverse
+          deb [arch=armhf,arm64] https://ports.ubuntu.com/ ${DISTRO_CODENAME}$ main restricted
+          deb [arch=armhf,arm64] https://ports.ubuntu.com/ ${DISTRO_CODENAME}$-updates main restricted universe multiverse
+          deb [arch=armhf,arm64] https://ports.ubuntu.com/ ${DISTRO_CODENAME}$ universe
+          deb [arch=armhf,arm64] https://ports.ubuntu.com/ ${DISTRO_CODENAME}$ multiverse
+          deb [arch=armhf,arm64] https://ports.ubuntu.com/ ${DISTRO_CODENAME}$-backports main restricted universe multiverse
           EOF
           sudo sed -i "s/^deb http/deb [arch=amd64] http/" /etc/apt/sources.list
           sudo sed -i "s/^deb mirror/deb [arch=amd64] mirror/" /etc/apt/sources.list
