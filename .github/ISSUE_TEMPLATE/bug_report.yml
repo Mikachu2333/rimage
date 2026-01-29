@@ -28,9 +28,8 @@ body:
       label: Library Version
       description: Specify the version of the library where you encountered the issue
       options:
-        - 0.12.1 (latest)
-        - 0.12.0
-        - 0.11.0
+        - 0.12.x (latest)
+        - 0.11.x
         - < 0.11.0 (old)
         - Others
     validations:
