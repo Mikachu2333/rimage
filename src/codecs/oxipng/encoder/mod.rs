@@ -95,12 +95,6 @@ impl EncoderTrait for OxiPngEncoder {
 
         #[cfg(feature = "metadata")]
         {
-            // write exif data
-            if let Some(_metadata) = &image.metadata().exif() {
-                log::warn!("Writing exif data is not supported");
-            }
-
-            // write icc data
             if let Some(icc) = &image.metadata().icc_chunk() {
                 img.add_icc_profile(icc);
             }

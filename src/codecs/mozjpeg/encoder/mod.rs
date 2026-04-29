@@ -201,12 +201,6 @@ impl EncoderTrait for MozJpegEncoder {
 
             #[cfg(feature = "metadata")]
             {
-                // write exif data
-                if let Some(_metadata) = &image.metadata().exif() {
-                    log::warn!("Writing exif data is not supported");
-                }
-
-                // write icc data
                 if let Some(metadata) = &image.metadata().icc_chunk() {
                     comp.write_icc_profile(metadata);
                 }

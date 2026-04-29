@@ -52,6 +52,20 @@ struct Result {
     output_size: u64,
 }
 
+struct ProcessingState {
+    results: Vec<Result>,
+    metadata: Option<Metadata>,
+}
+
+impl ProcessingState {
+    fn new() -> Self {
+        Self {
+            results: vec![],
+            metadata: None,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct Metadata {
     #[serde(rename = "inputSize")]
@@ -215,8 +229,8 @@ fn main() {
         })
     });
 
-    let results: Arc<Mutex<Vec<Result>>> = Arc::new(Mutex::new(vec![]));
-    let metadata: Arc<Mutex<Option<Metadata>>> = Arc::new(Mutex::new(None));
+    let state: Arc<Mutex<ProcessingState>> =
+        Arc::new(Mutex::new(ProcessingState::new()));
 
     match matches.subcommand() {
         Some((subcommand, matches)) => {
@@ -388,19 +402,18 @@ fn main() {
                     let processed_at = get_current_timestamp();
                     let output_created = get_current_timestamp();
 
-                    let mut results = results.lock().unwrap();
-                    let mut metadata = metadata.lock().unwrap();
+                    let mut state = state.lock().unwrap();
 
                     let absolute_input_path = fs::canonicalize(&input).unwrap();
                     let absolute_output_path = fs::canonicalize(&output).unwrap();
 
-                    results.push(Result {
+                    state.results.push(Result {
                         output,
                         input_size,
                         output_size,
                     });
 
-                    let metadata = metadata.get_or_insert(Metadata {
+                    let metadata = state.metadata.get_or_insert(Metadata {
                         input_size: 0,
                         output_size: 0,
                         total_images: 0,
@@ -443,11 +456,10 @@ fn main() {
                     pb.finish_and_clear();
                 });
 
-            let mut results = results.lock().unwrap();
-            let mut metadata = metadata.lock().unwrap();
+            let mut state = state.lock().unwrap();
 
             // Update final metadata calculations
-            if let Some(ref mut meta) = metadata.as_mut() {
+            if let Some(ref mut meta) = state.metadata.as_mut() {
                 meta.compression_ratio = if meta.input_size > 0 {
                     meta.output_size as f64 / meta.input_size as f64
                 } else {
@@ -455,9 +467,10 @@ fn main() {
                 };
             }
 
-            results.sort_by(|a, b| b.output_size.cmp(&a.output_size));
+            state.results.sort_by(|a, b| b.output_size.cmp(&a.output_size));
 
-            let path_width = results
+            let path_width = state
+                .results
                 .iter()
                 .map(|r| r.output.display().to_string().len())
                 .max()
@@ -466,7 +479,7 @@ fn main() {
             if !quiet {
                 let term = Term::stdout();
 
-                if results.len() > 1 {
+                if state.results.len() > 1 {
                     term.write_line(&format!(
                         "{:<path_width$} {}",
                         style("File").bold(),
@@ -474,7 +487,7 @@ fn main() {
                     ))
                     .unwrap();
 
-                    for result in results.iter() {
+                    for result in state.results.iter() {
                         let difference =
                             (result.output_size as f64 / result.input_size as f64) * 100.0;
 
@@ -493,8 +506,8 @@ fn main() {
                     }
                 }
 
-                let total_input_size = results.iter().map(|r| r.input_size).sum::<u64>();
-                let total_output_size = results.iter().map(|r| r.output_size).sum::<u64>();
+                let total_input_size = state.results.iter().map(|r| r.input_size).sum::<u64>();
+                let total_output_size = state.results.iter().map(|r| r.output_size).sum::<u64>();
 
                 let difference = (total_output_size as f64 / total_input_size as f64) * 100.0;
 
@@ -511,7 +524,7 @@ fn main() {
                 .unwrap();
             }
 
-            if output_metadata && let Some(metadata) = metadata.as_ref() {
+            if output_metadata && let Some(metadata) = state.metadata.as_ref() {
                 let json = serde_json::to_string_pretty(metadata).unwrap();
                 fs::write(metadata_path, json).unwrap();
             }
