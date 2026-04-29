@@ -127,20 +127,15 @@ impl EncoderTrait for MozJpegEncoder {
             comp.set_size(width, height);
 
             // When using custom quantization tables with very high quality settings (>= 85),
-            // DCT coefficients can overflow. Instead of reducing quality, we apply smoothing
-            // to normalize the data and prevent coefficient overflow.
+            // DCT coefficients can overflow. To prevent this, we apply a minimum smoothing
+            // factor of 10, which may slightly reduce sharpness but prevents encode failures.
             let has_custom_qtables = luma_qtable.is_some() || chroma_qtable.is_some();
             let safe_smoothing = if has_custom_qtables && self.options.quality >= 85.0 {
-                // Apply moderate smoothing to prevent DCT coefficient overflow
-                // This helps normalize extreme pixel values without reducing quality
-                let applied_smoothing = if self.options.smoothing >= 10 {
-                    self.options.smoothing
-                } else {
-                    10 // Minimum smoothing required to prevent DCT overflow
-                };
+                let applied_smoothing = self.options.smoothing.max(10);
                 log::warn!(
                     "High quality ({}) with custom quantization tables detected. \
-                     Applying smoothing ({}) to prevent DCT coefficient overflow.",
+                     Applying smoothing ({}) to prevent DCT coefficient overflow. \
+                     This may slightly reduce sharpness.",
                     self.options.quality,
                     applied_smoothing
                 );
