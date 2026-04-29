@@ -188,21 +188,32 @@ fn main() {
     LogWrapper::new(multi.clone(), logger).try_init().unwrap();
     log::set_max_level(level);
 
-    let matches = cli().get_matches_from(
-        #[cfg(not(windows))]
-        {
-            std::env::args()
-        },
-        #[cfg(windows)]
-        {
-            std::env::args().map(|arg| {
-                arg.replace("\\", "/")
-                    .replace("//", "/")
-                    .trim_matches(['\\', '/', '\n', '\r', '"', '\'', ' ', '\t'])
-                    .to_string()
-            })
-        },
-    );
+    let current_dir = std::env::current_dir().unwrap_or_default();
+    let matches = cli().get_matches_from({
+        std::env::args().map(|arg| {
+            let mut checked_arg = arg
+                .replace('\\', "/")
+                .replace("//", "/")
+                .trim_matches(['\n', '\r', '"', '\'', ' ', '\t'])
+                .to_string();
+
+            if checked_arg.starts_with("./") {
+                checked_arg = current_dir
+                    .join(&checked_arg[2..])
+                    .to_string_lossy()
+                    .into_owned();
+            }
+
+            #[cfg(not(windows))]
+            {
+                checked_arg
+            }
+            #[cfg(windows)]
+            {
+                checked_arg.replace("/", "\\")
+            }
+        })
+    });
 
     let results: Arc<Mutex<Vec<Result>>> = Arc::new(Mutex::new(vec![]));
     let metadata: Arc<Mutex<Option<Metadata>>> = Arc::new(Mutex::new(None));
