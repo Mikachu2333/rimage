@@ -281,7 +281,7 @@ pub fn encoder(name: &str, matches: &ArgMatches) -> Result<AvailableEncoders, Im
             use mozjpeg::qtable;
             use rimage::codecs::mozjpeg::MozJpegOptions;
 
-            let quality = *matches.get_one::<u8>("quality").unwrap() as f32;
+            let quality = matches.get_one::<u8>("quality").copied().unwrap_or(75) as f32;
             let chroma_quality = matches
                 .get_one::<u8>("chroma_quality")
                 .map(|q| *q as f32)
@@ -295,7 +295,11 @@ pub fn encoder(name: &str, matches: &ArgMatches) -> Result<AvailableEncoders, Im
                     .get_one::<u8>("smoothing")
                     .copied()
                     .unwrap_or_default(),
-                color_space: match matches.get_one::<String>("colorspace").unwrap().as_str() {
+                color_space: match matches
+                    .get_one::<String>("colorspace")
+                    .map(|s| s.as_str())
+                    .unwrap_or("ycbcr")
+                {
                     "ycbcr" => mozjpeg::ColorSpace::JCS_YCbCr,
                     "rgb" => mozjpeg::ColorSpace::JCS_EXT_RGB,
                     "grayscale" => mozjpeg::ColorSpace::JCS_GRAYSCALE,
@@ -377,19 +381,35 @@ pub fn encoder(name: &str, matches: &ArgMatches) -> Result<AvailableEncoders, Im
             use rimage::codecs::avif::AvifOptions;
 
             let options = AvifOptions {
-                quality: *matches.get_one::<u8>("quality").unwrap() as f32,
+                quality: matches.get_one::<u8>("quality").copied().unwrap_or(50) as f32,
                 alpha_quality: matches.get_one::<u8>("alpha_quality").map(|q| *q as f32),
-                speed: *matches.get_one::<u8>("speed").unwrap(),
-                color_space: match matches.get_one::<String>("colorspace").unwrap().as_str() {
+                speed: matches.get_one::<u8>("speed").copied().unwrap_or(6),
+                color_space: match matches
+                    .get_one::<String>("colorspace")
+                    .map(|s| s.as_str())
+                    .unwrap_or("ycbcr")
+                {
                     "ycbcr" => ravif::ColorModel::YCbCr,
                     "rgb" => ravif::ColorModel::RGB,
-                    _ => unreachable!(),
+                    cs => {
+                        return Err(ImageErrors::GenericString(format!(
+                            "Unsupported avif colorspace: {cs}",
+                        )));
+                    }
                 },
-                alpha_color_mode: match matches.get_one::<String>("alpha_mode").unwrap().as_str() {
+                alpha_color_mode: match matches
+                    .get_one::<String>("alpha_mode")
+                    .map(|s| s.as_str())
+                    .unwrap_or("UnassociatedClean")
+                {
                     "UnassociatedDirty" => ravif::AlphaColorMode::UnassociatedDirty,
                     "UnassociatedClean" => ravif::AlphaColorMode::UnassociatedClean,
                     "Premultiplied" => ravif::AlphaColorMode::Premultiplied,
-                    _ => unreachable!(),
+                    mode => {
+                        return Err(ImageErrors::GenericString(format!(
+                            "Unsupported avif alpha mode: {mode}",
+                        )));
+                    }
                 },
             };
 
@@ -403,9 +423,10 @@ pub fn encoder(name: &str, matches: &ArgMatches) -> Result<AvailableEncoders, Im
 
             let mut options = WebPOptions::new().unwrap();
 
-            options.quality = *matches.get_one::<u8>("quality").unwrap() as f32;
+            options.quality = matches.get_one::<u8>("quality").copied().unwrap_or(75) as f32;
             options.lossless = matches.get_flag("lossless") as i32;
-            options.near_lossless = 100 - *matches.get_one::<u8>("slight_loss").unwrap() as i32;
+            options.near_lossless =
+                100 - matches.get_one::<u8>("slight_loss").copied().unwrap_or(0) as i32;
             options.exact = matches.get_flag("exact") as i32;
 
             Ok(AvailableEncoders::Webp(Box::new(

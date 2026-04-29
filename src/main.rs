@@ -220,9 +220,9 @@ fn main() {
 
     match matches.subcommand() {
         Some((subcommand, matches)) => {
-            if let Some(threads) = matches.get_one::<u8>("threads") {
+            if let Some(threads) = matches.get_one::<usize>("threads") {
                 rayon::ThreadPoolBuilder::new()
-                    .num_threads(*threads as usize)
+                    .num_threads(*threads)
                     .build_global()
                     .unwrap();
             }

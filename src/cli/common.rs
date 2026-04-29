@@ -38,7 +38,7 @@ impl CommonArgs for Command {
 
                 Usage of multiple threads can speed up the execution of tasks, especially on multi-core processors.
                 By default, the number of available threads is utilized."#})
-                .value_parser(value_parser!(u8).range(1..=threads::num_threads() as i64)),
+                .value_parser(value_parser!(usize).range(1..=threads::num_threads())),
             arg!(-x --strip "Strip metadata when encoding images (where supported)")
                 .action(ArgAction::SetTrue),
             arg!(--"no-progress" "Disables progress bar.")
