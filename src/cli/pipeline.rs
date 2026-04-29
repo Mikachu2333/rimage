@@ -299,7 +299,11 @@ pub fn encoder(name: &str, matches: &ArgMatches) -> Result<AvailableEncoders, Im
                     "ycbcr" => mozjpeg::ColorSpace::JCS_YCbCr,
                     "rgb" => mozjpeg::ColorSpace::JCS_EXT_RGB,
                     "grayscale" => mozjpeg::ColorSpace::JCS_GRAYSCALE,
-                    _ => unreachable!(),
+                    cs => {
+                        return Err(ImageErrors::GenericString(format!(
+                            "Unsupported mozjpeg colorspace: {cs}",
+                        )));
+                    }
                 },
                 trellis_multipass: matches.get_flag("multipass"),
                 chroma_subsample: matches.get_one::<u8>("subsample").copied(),
@@ -324,7 +328,7 @@ pub fn encoder(name: &str, matches: &ArgMatches) -> Result<AvailableEncoders, Im
                         "WatsonTaylorBorthwick" => {
                             qtable::WatsonTaylorBorthwick.scaled(quality, quality)
                         }
-                        _ => unreachable!(),
+                        q => return Err(ImageErrors::GenericString(format!("Unknown qtable: {q}"))),
                     }),
 
                 chroma_qtable: matches
@@ -347,7 +351,7 @@ pub fn encoder(name: &str, matches: &ArgMatches) -> Result<AvailableEncoders, Im
                         "WatsonTaylorBorthwick" => {
                             qtable::WatsonTaylorBorthwick.scaled(chroma_quality, chroma_quality)
                         }
-                        _ => unreachable!(),
+                        q => return Err(ImageErrors::GenericString(format!("Unknown qtable: {q}"))),
                     }),
             };
 
@@ -383,13 +387,21 @@ pub fn encoder(name: &str, matches: &ArgMatches) -> Result<AvailableEncoders, Im
                 color_space: match matches.get_one::<String>("colorspace").unwrap().as_str() {
                     "ycbcr" => ravif::ColorModel::YCbCr,
                     "rgb" => ravif::ColorModel::RGB,
-                    _ => unreachable!(),
+                    cs => {
+                        return Err(ImageErrors::GenericString(format!(
+                            "Unsupported avif colorspace: {cs}",
+                        )));
+                    }
                 },
                 alpha_color_mode: match matches.get_one::<String>("alpha_mode").unwrap().as_str() {
                     "UnassociatedDirty" => ravif::AlphaColorMode::UnassociatedDirty,
                     "UnassociatedClean" => ravif::AlphaColorMode::UnassociatedClean,
                     "Premultiplied" => ravif::AlphaColorMode::Premultiplied,
-                    _ => unreachable!(),
+                    mode => {
+                        return Err(ImageErrors::GenericString(format!(
+                            "Unsupported avif alpha mode: {mode}",
+                        )));
+                    }
                 },
             };
 

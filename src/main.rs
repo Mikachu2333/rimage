@@ -141,7 +141,7 @@ fn get_file_modified_time(path: &Path) -> Option<u64> {
 fn get_current_timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_secs()
 }
 
@@ -192,10 +192,14 @@ fn main() {
     let matches = cli().get_matches_from({
         std::env::args().map(|arg| {
             let mut checked_arg = arg
-                .replace('\\', "/")
-                .replace("//", "/")
                 .trim_matches(['\n', '\r', '"', '\'', ' ', '\t'])
                 .to_string();
+
+            // Normalize forward-slashes but preserve UNC paths (\\server\share)
+            let is_unc = checked_arg.starts_with(r"\\");
+            if !is_unc {
+                checked_arg = checked_arg.replace('\\', "/").replace("//", "/");
+            }
 
             if checked_arg.starts_with("./") {
                 checked_arg = current_dir
@@ -210,7 +214,11 @@ fn main() {
             }
             #[cfg(windows)]
             {
-                checked_arg.replace("/", "\\")
+                if is_unc {
+                    checked_arg
+                } else {
+                    checked_arg.replace("/", "\\")
+                }
             }
         })
     });
@@ -279,14 +287,8 @@ fn main() {
                     let input_modified = get_file_modified_time(&input);
 
                     let mut img = handle_error!(input, decode(&input));
-                    let exif_metadata: Option<ExifMetadata> = {
-                        // Temporarily suppress little_exif error logs for images without EXIF
-                        let prev_level = log::max_level();
-                        log::set_max_level(log::LevelFilter::Off);
-                        let result = ExifMetadata::new_from_path(&input);
-                        log::set_max_level(prev_level);
-
-                        match result {
+                    let exif_metadata: Option<ExifMetadata> =
+                        match ExifMetadata::new_from_path(&input) {
                             Ok(exif) => {
                                 if strip_metadata {
                                     None
@@ -294,9 +296,11 @@ fn main() {
                                     Some(exif)
                                 }
                             }
-                            Err(_) => None,
-                        }
-                    };
+                            Err(e) => {
+                                log::debug!("{}: EXIF read skipped: {e}", input.display());
+                                None
+                            }
+                        };
 
                     pb.set_style(sty_aux_operations.clone());
 
@@ -356,20 +360,20 @@ fn main() {
                     pb.set_style(sty_aux_encode.clone());
 
                     if backup {
-                        handle_error!(
-                            input,
-                            fs::rename(
-                                &input,
-                                format!(
-                                    "{}@backup.{}",
-                                    input.file_stem().unwrap().to_str().unwrap(),
-                                    input.extension().unwrap().to_str().unwrap()
-                                ),
-                            )
+                        let backup_name = format!(
+                            "{}@backup.{}",
+                            input
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("backup"),
+                            input.extension().and_then(|s| s.to_str()).unwrap_or("bak"),
                         );
+                        handle_error!(input, fs::rename(&input, backup_name));
                     }
 
-                    handle_error!(output, fs::create_dir_all(output.parent().unwrap()));
+                    if let Some(parent) = output.parent() {
+                        handle_error!(output, fs::create_dir_all(parent));
+                    }
                     let output_file = handle_error!(output, File::create(&output));
 
                     handle_error!(output, available_encoder.encode(&img, output_file));
@@ -391,8 +395,10 @@ fn main() {
                     let mut results = results.lock().unwrap();
                     let mut metadata = metadata.lock().unwrap();
 
-                    let absolute_input_path = fs::canonicalize(&input).unwrap();
-                    let absolute_output_path = fs::canonicalize(&output).unwrap();
+                    let absolute_input_path =
+                        fs::canonicalize(&input).unwrap_or_else(|_| input.clone());
+                    let absolute_output_path =
+                        fs::canonicalize(&output).unwrap_or_else(|_| output.clone());
 
                     results.push(Result {
                         output,
@@ -516,6 +522,6 @@ fn main() {
                 fs::write(metadata_path, json).unwrap();
             }
         }
-        std::prelude::v1::None => unreachable!(),
+        None => unreachable!("clap ensures a subcommand is always provided"),
     }
 }

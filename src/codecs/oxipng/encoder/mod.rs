@@ -53,7 +53,9 @@ impl EncoderTrait for OxiPngEncoder {
                 .map(|z| z.u16_to_native_endian())
                 .collect()
         } else {
-            unreachable!()
+            return Err(ImageErrors::EncodeErrors(ImgEncodeErrors::Generic(
+                format!("{:?} is not supported for oxipng encoding", image.depth()),
+            )));
         }
         .into_iter()
         .next()
