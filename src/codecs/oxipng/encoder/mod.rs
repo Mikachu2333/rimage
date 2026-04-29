@@ -42,6 +42,12 @@ impl EncoderTrait for OxiPngEncoder {
     ) -> Result<usize, ImageErrors> {
         let (width, height) = image.dimensions();
 
+        if image.is_animated() {
+            log::warn!(
+                "OxiPNG does not support animated images, only the first frame will be encoded"
+            );
+        }
+
         // inlined `to_u8` method because its private
         let _colorspace = image.colorspace();
         let data = if image.depth() == BitDepth::Eight {
@@ -53,7 +59,9 @@ impl EncoderTrait for OxiPngEncoder {
                 .map(|z| z.u16_to_native_endian())
                 .collect()
         } else {
-            unreachable!()
+            return Err(ImageErrors::EncodeErrors(ImgEncodeErrors::Generic(
+                format!("{:?} is not supported for oxipng encoding", image.depth()),
+            )));
         }
         .into_iter()
         .next()
