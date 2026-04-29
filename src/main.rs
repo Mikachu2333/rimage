@@ -141,7 +141,7 @@ fn get_file_modified_time(path: &Path) -> Option<u64> {
 fn get_current_timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_secs()
 }
 
@@ -171,6 +171,105 @@ fn colorspace_to_string(colorspace: &ColorSpace) -> String {
     }
 }
 
+/// Normalize a CLI argument into a canonical path string suitable for clap parsing.
+///
+/// Handles:
+/// - Trimming surrounding quotes and whitespace
+/// - Expanding `~` to the home directory
+/// - Resolving relative paths (`.`, `..`) against the current directory
+/// - Normalizing path separators per-platform while preserving UNC prefixes
+/// - Canonicalizing existing paths (resolves symlinks and `..`)
+fn normalize_arg(raw: String, current_dir: &Path) -> String {
+    let arg = raw
+        .trim_matches(['\n', '\r', '"', '\'', ' ', '\t'])
+        .to_string();
+
+    if arg.is_empty() {
+        return arg;
+    }
+
+    // Expand ~ to home directory before path normalization
+    let arg = expand_tilde(&arg);
+
+    let path = PathBuf::from(&arg);
+
+    // Use Path components to detect absolute paths and UNC prefixes
+    // rather than fragile string matching
+    let is_absolute = path.is_absolute()
+        || path
+            .components()
+            .next()
+            .is_some_and(|c| matches!(c, std::path::Component::Prefix(_)));
+
+    // Resolve relative paths against current_dir
+    let path = if is_absolute {
+        path
+    } else {
+        current_dir.join(&path)
+    };
+
+    // Canonicalize existing paths (resolves .., symlinks, and normalizes case).
+    // For paths that don't exist yet (e.g. output directories), keep the joined path.
+    let path = path.canonicalize().unwrap_or(path);
+
+    #[cfg(not(windows))]
+    {
+        path.to_string_lossy().into_owned()
+    }
+    #[cfg(windows)]
+    {
+        // On Windows, preserve canonicalized UNC and verbatim prefixes as-is.
+        // For regular paths, ensure backslash separators.
+        let uses_unc_or_verbatim = path
+            .components()
+            .next()
+            .is_some_and(|c| matches!(c, std::path::Component::Prefix(p) if matches!(p.kind(), std::path::Prefix::VerbatimUNC(..) | std::path::Prefix::UNC(..) | std::path::Prefix::Verbatim(_))));
+
+        if uses_unc_or_verbatim {
+            path.to_string_lossy().into_owned()
+        } else {
+            path.to_string_lossy().replace('/', "\\")
+        }
+    }
+}
+
+/// Expand a leading `~` to the user's home directory.
+///
+/// On Unix: uses `HOME` env var.
+/// On Windows: uses `USERPROFILE` env var.
+/// Falls back to the original string if the env var is unset.
+fn expand_tilde(arg: &str) -> String {
+    if !arg.starts_with('~') {
+        return arg.to_string();
+    }
+
+    #[cfg(windows)]
+    let home_var = "USERPROFILE";
+    #[cfg(not(windows))]
+    let home_var = "HOME";
+
+    let home_dir = match std::env::var(home_var) {
+        Ok(h) => h,
+        Err(_) => return arg.to_string(),
+    };
+
+    if arg == "~" {
+        return home_dir;
+    }
+
+    // Expand "~/..." to "$HOME/..."
+    let sep = if cfg!(windows) { '\\' } else { '/' };
+    if arg.starts_with(&format!("~{sep}")) {
+        let relative = &arg[2..];
+        let mut path = PathBuf::from(home_dir);
+        path.push(relative);
+        return path.to_string_lossy().into_owned();
+    }
+
+    // "~something" is not a home directory reference, keep as-is
+    arg.to_string()
+}
+
 fn main() {
     let logger = pretty_env_logger::formatted_builder()
         .parse_default_env()
@@ -190,29 +289,8 @@ fn main() {
 
     let current_dir = std::env::current_dir().unwrap_or_default();
     let matches = cli().get_matches_from({
-        std::env::args().map(|arg| {
-            let mut checked_arg = arg
-                .replace('\\', "/")
-                .replace("//", "/")
-                .trim_matches(['\n', '\r', '"', '\'', ' ', '\t'])
-                .to_string();
-
-            if checked_arg.starts_with("./") {
-                checked_arg = current_dir
-                    .join(&checked_arg[2..])
-                    .to_string_lossy()
-                    .into_owned();
-            }
-
-            #[cfg(not(windows))]
-            {
-                checked_arg
-            }
-            #[cfg(windows)]
-            {
-                checked_arg.replace("/", "\\")
-            }
-        })
+        std::env::args()
+            .map(|arg| normalize_arg(arg, &current_dir))
     });
 
     let results: Arc<Mutex<Vec<Result>>> = Arc::new(Mutex::new(vec![]));
@@ -279,14 +357,8 @@ fn main() {
                     let input_modified = get_file_modified_time(&input);
 
                     let mut img = handle_error!(input, decode(&input));
-                    let exif_metadata: Option<ExifMetadata> = {
-                        // Temporarily suppress little_exif error logs for images without EXIF
-                        let prev_level = log::max_level();
-                        log::set_max_level(log::LevelFilter::Off);
-                        let result = ExifMetadata::new_from_path(&input);
-                        log::set_max_level(prev_level);
-
-                        match result {
+                    let exif_metadata: Option<ExifMetadata> =
+                        match ExifMetadata::new_from_path(&input) {
                             Ok(exif) => {
                                 if strip_metadata {
                                     None
@@ -294,9 +366,11 @@ fn main() {
                                     Some(exif)
                                 }
                             }
-                            Err(_) => None,
-                        }
-                    };
+                            Err(e) => {
+                                log::debug!("{}: EXIF read skipped: {e}", input.display());
+                                None
+                            }
+                        };
 
                     pb.set_style(sty_aux_operations.clone());
 
@@ -356,20 +430,20 @@ fn main() {
                     pb.set_style(sty_aux_encode.clone());
 
                     if backup {
-                        handle_error!(
-                            input,
-                            fs::rename(
-                                &input,
-                                format!(
-                                    "{}@backup.{}",
-                                    input.file_stem().unwrap().to_str().unwrap(),
-                                    input.extension().unwrap().to_str().unwrap()
-                                ),
-                            )
+                        let backup_name = format!(
+                            "{}@backup.{}",
+                            input
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("backup"),
+                            input.extension().and_then(|s| s.to_str()).unwrap_or("bak"),
                         );
+                        handle_error!(input, fs::rename(&input, backup_name));
                     }
 
-                    handle_error!(output, fs::create_dir_all(output.parent().unwrap()));
+                    if let Some(parent) = output.parent() {
+                        handle_error!(output, fs::create_dir_all(parent));
+                    }
                     let output_file = handle_error!(output, File::create(&output));
 
                     handle_error!(output, available_encoder.encode(&img, output_file));
@@ -391,8 +465,10 @@ fn main() {
                     let mut results = results.lock().unwrap();
                     let mut metadata = metadata.lock().unwrap();
 
-                    let absolute_input_path = fs::canonicalize(&input).unwrap();
-                    let absolute_output_path = fs::canonicalize(&output).unwrap();
+                    let absolute_input_path =
+                        fs::canonicalize(&input).unwrap_or_else(|_| input.clone());
+                    let absolute_output_path =
+                        fs::canonicalize(&output).unwrap_or_else(|_| output.clone());
 
                     results.push(Result {
                         output,
@@ -516,6 +592,6 @@ fn main() {
                 fs::write(metadata_path, json).unwrap();
             }
         }
-        std::prelude::v1::None => unreachable!(),
+        None => unreachable!("clap ensures a subcommand is always provided"),
     }
 }
