@@ -188,6 +188,24 @@ fn normalize_arg(raw: String, current_dir: &Path) -> String {
         return arg;
     }
 
+    // Skip flags and options
+    if arg.starts_with('-') {
+        return arg;
+    }
+
+    // Skip known subcommands
+    let subcommands = [
+        "avif", "farbfeld", "jpeg", "jpegxl", "mozjpeg", "oxipng", "png", "ppm", "qoi", "tiff", "webp",
+    ];
+    if subcommands.contains(&arg.as_str()) {
+        return arg;
+    }
+
+    // Skip numbers (e.g., quality, resize values)
+    if arg.parse::<f64>().is_ok() {
+        return arg;
+    }
+
     // Expand ~ to home directory before path normalization
     let arg = expand_tilde(&arg);
 
