@@ -195,7 +195,8 @@ fn normalize_arg(raw: String, current_dir: &Path) -> String {
 
     // Skip known subcommands
     let subcommands = [
-        "avif", "farbfeld", "jpeg", "jpegxl", "mozjpeg", "oxipng", "png", "ppm", "qoi", "tiff", "webp",
+        "avif", "farbfeld", "jpeg", "jpegxl", "mozjpeg", "oxipng", "png", "ppm", "qoi", "tiff",
+        "webp",
     ];
     if subcommands.contains(&arg.as_str()) {
         return arg;
@@ -306,10 +307,8 @@ fn main() {
     log::set_max_level(level);
 
     let current_dir = std::env::current_dir().unwrap_or_default();
-    let matches = cli().get_matches_from({
-        std::env::args()
-            .map(|arg| normalize_arg(arg, &current_dir))
-    });
+    let matches =
+        cli().get_matches_from({ std::env::args().map(|arg| normalize_arg(arg, &current_dir)) });
 
     let results: Arc<Mutex<Vec<Result>>> = Arc::new(Mutex::new(vec![]));
     let metadata: Arc<Mutex<Option<Metadata>>> = Arc::new(Mutex::new(None));
@@ -456,7 +455,8 @@ fn main() {
                                 .unwrap_or("backup"),
                             input.extension().and_then(|s| s.to_str()).unwrap_or("bak"),
                         );
-                        handle_error!(input, fs::rename(&input, backup_name));
+                        let backup_path = input.with_file_name(&backup_name);
+                        handle_error!(input, fs::rename(&input, backup_path));
                     }
 
                     if let Some(parent) = output.parent() {
