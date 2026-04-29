@@ -14,9 +14,9 @@ homepage      = "https://lib.rs/rimage"
 include       = ["/README.md", "/Cargo.toml", "/src/**/*.rs"]
 build         = "build.rs"
 
-[package.metadata.winres]
-LegalCopyright  = "Copyright Vladyslav Vladinov © 2024-2026"
-FileDescription = "Powerful img optimization CLI tool by Rust"
+    [package.metadata.winres]
+    LegalCopyright  = "Copyright Vladyslav Vladinov © 2024-2026"
+    FileDescription = "Powerful img optimization CLI tool by Rust"
 
 [build-dependencies]
 winres = { version = "0.1.12", default-features = false }
@@ -96,7 +96,9 @@ console = ["dep:console"]
 [dependencies]
 zune-core = "0.5"
 log = "0.4"
-zune-image = { version = "0.5.0-rc0", default-features = false, features = ["simd"] }
+zune-image = { version = "0.5.0", default-features = false, features = [
+    "simd",
+] }
 fast_image_resize = { version = "5.4", optional = true }
 imagequant = { version = "4.4", default-features = false, optional = true }
 rgb = { version = "0.8", optional = true }
@@ -113,7 +115,9 @@ libavif = { version = "0.14.0", default-features = false, features = [
     "codec-aom",
 ], optional = true }
 lcms2 = { version = "6.1", optional = true }
-tiff = { version = "0.10.3", default-features = false, features = ["lzw"], optional = true }
+tiff = { version = "0.10.3", default-features = false, features = [
+    "lzw",
+], optional = true }
 
 # cli
 anyhow = { version = "1.0", optional = true }
