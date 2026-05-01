@@ -645,12 +645,18 @@ fn main() {
                 .unwrap();
             }
 
+            let rust_log_hint = if cfg!(windows) {
+                r#"$env:RUST_LOG="debug""#
+            } else {
+                "RUST_LOG=debug"
+            };
             let succeeded = state.results.len() as u64;
             if succeeded < file_count {
                 eprintln!(
-                    "{}/{} file(s) failed. Run with `$env:RUST_LOG=\"debug\";` for details.",
+                    "{}/{} file(s) failed. Run with `{}` for details.",
                     file_count - succeeded,
                     file_count,
+                    rust_log_hint
                 );
             }
 

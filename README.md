@@ -271,7 +271,8 @@ rimage png "D:\example.jpg" -s "suffix"  -d "D:\desktop\" # backslash at the end
     ```pwsh
     cargo build --release --all-features # BUILD
     cargo run --features=build-binary ... # TEST with args
-    cargo cargo clippy --all-features -- -D warnings;fmt --all -- --check # CHECK and FORMAT
+    cargo clippy --all-features -- -D warnings # CHECK
+    cargo fmt --all -- --check # FORMAT
     ```
 
 ## Contributing
