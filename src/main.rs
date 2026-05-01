@@ -667,27 +667,45 @@ fn main() {
 mod tests {
     use super::*;
 
+    fn test_base() -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from(r"D:\projects\rimage")
+        } else {
+            PathBuf::from("/projects/rimage")
+        }
+    }
+
+    fn test_base_src() -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from(r"D:\projects\rimage\src")
+        } else {
+            PathBuf::from("/projects/rimage/src")
+        }
+    }
+
     #[test]
     fn join_normalized_strips_curdir() {
-        let base = Path::new(r"D:\projects\rimage");
+        let base = test_base();
         let rel = Path::new("./1.jpg");
-        let result = join_normalized(base, rel);
-        assert_eq!(result, Path::new(r"D:\projects\rimage\1.jpg"));
+        let result = join_normalized(&base, rel);
+        assert_eq!(result, base.join("1.jpg"));
     }
 
     #[test]
     fn join_normalized_resolves_parentdir() {
-        let base = Path::new(r"D:\projects\rimage\src");
+        let base = test_base_src();
         let rel = Path::new("../tests/1.jpg");
-        let result = join_normalized(base, rel);
-        assert_eq!(result, Path::new(r"D:\projects\rimage\tests\1.jpg"));
+        let result = join_normalized(&base, rel);
+        let expected = base.parent().unwrap().join("tests/1.jpg");
+        assert_eq!(result, expected);
     }
 
     #[test]
     fn join_normalized_handles_deep_path() {
-        let base = Path::new(r"D:\projects\rimage");
+        let base = test_base();
         let rel = Path::new("subdir/./other/../1.jpg");
-        let result = join_normalized(base, rel);
-        assert_eq!(result, Path::new(r"D:\projects\rimage\subdir\1.jpg"));
+        let result = join_normalized(&base, rel);
+        let expected = base.join("subdir").join("1.jpg");
+        assert_eq!(result, expected);
     }
 }
