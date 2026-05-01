@@ -94,11 +94,9 @@ icc     = ["dep:lcms2"]
 console = ["dep:console"]
 
 [dependencies]
-zune-core = "0.5"
 log = "0.4"
-zune-image = { version = "0.5.0", default-features = false, features = [
-    "simd",
-] }
+zune-core = { version = "0.5.1", features = ["std"] }
+zune-image = { version = "0.5.0", features = ["simd"] }
 fast_image_resize = { version = "5.4", optional = true }
 imagequant = { version = "4.4", default-features = false, optional = true }
 rgb = { version = "0.8", optional = true }
@@ -138,7 +136,3 @@ serde_json = { version = "1.0", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 glob = { version = "0.3", optional = true }
-
-[dev-dependencies]
-zune-core  = { version = "0.5.0", features = ["std"] }
-zune-image = "0.5.0-rc0"
