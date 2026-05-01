@@ -27,6 +27,8 @@ use crate::cli::pipeline::encoder;
 
 mod cli;
 
+const DEBUG: bool = cfg!(debug_assertions);
+
 macro_rules! handle_error {
     ( $path:expr, $e:expr ) => {
         match $e {
@@ -369,6 +371,9 @@ fn main() {
                 .map(|p| normalize_path(p, &current_dir))
                 .collect();
             let files = collect_files(&files);
+            if DEBUG{
+                dbg!(&files);
+            }
 
             let file_count = files.iter().filter(|f| f.is_file()).count() as u64;
 
