@@ -60,7 +60,7 @@ impl Preprocessors for Command {
                 arg!(--upscale "Upscale the image(s) when resizing.")
                     .long_help(indoc! {r#"Upscale the image(s) when resizing.
 
-                    This is useful when you want to reduce the size of the image when it is larger than the specified size.
+                    This is useful when you want to increase the size of the image when it is smaller than the specified size.
                     It is recommended to use this option with --resize"#})
                     .default_value("true")
                     .action(ArgAction::SetTrue)
@@ -70,7 +70,7 @@ impl Preprocessors for Command {
                 arg!(--"no-upscale" "Disable upscaling when resizing.")
                     .long_help(indoc! {r#"Disable upscaling when resizing.
 
-                    This is useful when you don't want to reduce the size of the image when it is larger than the specified size.
+                    This is useful when you don't want to increase the size of the image when it is smaller than the specified size.
                     It is recommended to use this option with --resize"#})
                     .action(ArgAction::SetTrue)
                     .requires("resize"),
