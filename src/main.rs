@@ -105,6 +105,20 @@ impl Drop for PermitGuard {
     }
 }
 
+/// RAII guard that updates progress bars on drop, ensuring they advance
+/// even when a worker returns early due to an error.
+struct FinishGuard {
+    pb: ProgressBar,
+    pb_main: ProgressBar,
+}
+
+impl Drop for FinishGuard {
+    fn drop(&mut self) {
+        self.pb.finish_and_clear();
+        self.pb_main.inc(1);
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct Metadata {
     #[serde(rename = "inputSize")]
@@ -415,6 +429,13 @@ fn main() {
                         pb.set_message(format!("{}", input.display()));
                         pb.enable_steady_tick(Duration::from_millis(100));
 
+                        // Advance progress bars on all exit paths (including early
+                        // returns from handle_error!).
+                        let _finish = FinishGuard {
+                            pb: pb.clone(),
+                            pb_main: pb_main.clone(),
+                        };
+
                         let mut ops: Vec<Box<dyn OperationsTrait>> = Vec::new();
 
                         let input_size = handle_error!(input, input.metadata()).len();
@@ -569,9 +590,6 @@ fn main() {
                             input_modified,
                             output_created,
                         });
-
-                        pb.finish_and_clear();
-                        pb_main.inc(1);
                     });
                 }
             });
