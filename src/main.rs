@@ -407,6 +407,7 @@ fn main() {
                     let state = Arc::clone(&state);
                     let current_dir = current_dir.clone();
                     s.spawn(move |_| {
+                        let _permit = _permit;
                         let image_start_time = std::time::Instant::now();
 
                         let pb = multi.add(ProgressBar::new_spinner());
