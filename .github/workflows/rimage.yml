@@ -18,6 +18,8 @@ on:
     types:
       - opened
       - synchronize
+      - reopened
+      - ready_for_review
   workflow_dispatch:
 
 jobs:
@@ -44,25 +46,25 @@ jobs:
 
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-22.04
+            os: ubuntu-latest
             target-apt-arch: amd64
           - target: x86_64-unknown-linux-musl
-            os: ubuntu-22.04
+            os: ubuntu-latest
             target-apt-arch: amd64
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-22.04
+            os: ubuntu-latest
             target-apt-arch: arm64
           - target: aarch64-unknown-linux-musl
-            os: ubuntu-22.04
+            os: ubuntu-latest
             target-apt-arch: arm64
           - target: x86_64-pc-windows-msvc
-            os: windows-2022
+            os: windows-latest
           - target: i686-pc-windows-msvc
-            os: windows-2022
+            os: windows-latest
           - target: x86_64-apple-darwin
-            os: macos-15
+            os: macos-latest
           - target: aarch64-apple-darwin
-            os: macos-15
+            os: macos-latest
           #- target: wasm32-unknown-emscripten
           #  os: macos-14
 
@@ -70,19 +72,29 @@ jobs:
       CARGO_BUILD_TARGET: ${{ matrix.target }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: set up ubuntu multiarch
         if: startsWith(matrix.os, 'ubuntu') && matrix.target-apt-arch != 'amd64'
         run: |
-          readonly DISTRO_CODENAME=jammy
-          sudo dpkg --add-architecture "${{ matrix.target-apt-arch }}"
-          sudo sed -i "s/^deb http/deb [arch=$(dpkg-architecture -q DEB_HOST_ARCH)] http/" /etc/apt/sources.list
-          sudo sed -i "s/^deb mirror/deb [arch=$(dpkg-architecture -q DEB_HOST_ARCH)] mirror/" /etc/apt/sources.list
-          for suite in '' '-updates' '-backports' '-security'; do
-            echo "deb [arch=${{ matrix.target-apt-arch }}] http://ports.ubuntu.com/ $DISTRO_CODENAME$suite main universe multiverse" | \
-            sudo tee -a /etc/apt/sources.list >/dev/null
-          done
+          readonly DISTRO_CODENAME=$(lsb_release -cs)
+          readonly HOST_ARCH=$(dpkg-architecture -q DEB_HOST_ARCH)
+          readonly TARGET_ARCH="${{ matrix.target-apt-arch }}"
+          sudo dpkg --add-architecture "$TARGET_ARCH"
+          # Clear all existing sources to prevent architecture-leak 404s
+          # (e.g. security.ubuntu.com doesn't serve arm64, ports.ubuntu.com doesn't serve amd64)
+          sudo rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list
+          # Host arch: standard Ubuntu mirrors (security.ubuntu.com is only queried for host arch)
+          sudo tee /etc/apt/sources.list <<EOF
+          deb [arch=$HOST_ARCH] http://archive.ubuntu.com/ubuntu/ $DISTRO_CODENAME main restricted universe multiverse
+          deb [arch=$HOST_ARCH] http://archive.ubuntu.com/ubuntu/ $DISTRO_CODENAME-updates main restricted universe multiverse
+          deb [arch=$HOST_ARCH] http://archive.ubuntu.com/ubuntu/ $DISTRO_CODENAME-backports main restricted universe multiverse
+          deb [arch=$HOST_ARCH] http://security.ubuntu.com/ubuntu/ $DISTRO_CODENAME-security main restricted universe multiverse
+          deb [arch=$TARGET_ARCH] http://ports.ubuntu.com/ubuntu-ports/ $DISTRO_CODENAME main universe multiverse
+          deb [arch=$TARGET_ARCH] http://ports.ubuntu.com/ubuntu-ports/ $DISTRO_CODENAME-updates main universe multiverse
+          deb [arch=$TARGET_ARCH] http://ports.ubuntu.com/ubuntu-ports/ $DISTRO_CODENAME-backports main universe multiverse
+          deb [arch=$TARGET_ARCH] http://ports.ubuntu.com/ubuntu-ports/ $DISTRO_CODENAME-security main universe multiverse
+          EOF
 
       - name: install musl development files
         if: endsWith(matrix.target, '-musl')
@@ -98,18 +110,18 @@ jobs:
 
       - name: set musl-g++
         if: matrix.target == 'x86_64-unknown-linux-musl'
-        run: sudo ln -s /bin/g++ /bin/musl-g++
+        run: sudo ln -sf /bin/g++ /bin/musl-g++
 
       - name: set aarch64-linux-musl-g++
         if: matrix.target == 'aarch64-unknown-linux-musl'
-        run: sudo ln -s /bin/aarch64-linux-gnu-g++ /bin/aarch64-linux-musl-g++
-
-      - uses: Swatinem/rust-cache@v2
+        run: sudo ln -sf /bin/aarch64-linux-gnu-g++ /bin/aarch64-linux-musl-g++
 
       - name: install rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          targets: ${{ matrix.target }}
+          cache: true
+          target: ${{ matrix.target }}
+          components: rustfmt, clippy
 
       - uses: ilammy/setup-nasm@v1
 
@@ -130,7 +142,7 @@ jobs:
         if: startsWith(matrix.os, 'windows')
         run: |
           choco install -y ninja
-          pip install meson
+          choco install -y meson
 
       - name: install emcc
         if: matrix.target == 'wasm32-unknown-emscripten'
@@ -159,7 +171,7 @@ jobs:
         if: matrix.target != 'wasm32-unknown-emscripten'
         uses: actions/upload-artifact@v4
         with:
-          name: rimage binary (${{ matrix.target }})
+          name: rimage-${{ matrix.target }}
           path: |
             target/${{ env.CARGO_BUILD_TARGET }}/release/rimage
             target/${{ env.CARGO_BUILD_TARGET }}/release/rimage.exe
@@ -194,18 +206,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: install dependencies
         run: |
           sudo apt-get -yq update
           sudo apt-get -yq install ninja-build meson nasm
 
-      - uses: Swatinem/rust-cache@v2
-
-      - name: install rust toolchain (rust-toolchain-reborn)
-        uses: dtolnay/rust-toolchain@stable
+      - name: install rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
+          cache: true
           components: rustfmt, clippy
 
       - name: formatting check
