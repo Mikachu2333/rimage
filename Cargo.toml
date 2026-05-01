@@ -112,7 +112,7 @@ libavif = { version = "0.14.0", default-features = false, features = [
     "codec-aom",
 ], optional = true }
 lcms2 = { version = "6.1", optional = true }
-tiff = { version = "0.10.3", default-features = false, features = [
+tiff = { version = "0.11.3", default-features = false, features = [
     "lzw",
 ], optional = true }
 
