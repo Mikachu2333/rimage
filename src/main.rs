@@ -371,7 +371,7 @@ fn main() {
                 .map(|p| normalize_path(p, &current_dir))
                 .collect();
             let files = collect_files(&files);
-            if DEBUG{
+            if DEBUG {
                 dbg!(&files);
             }
 
