@@ -273,6 +273,7 @@ rimage png "D:\example.jpg" -s "suffix"  -d "D:\desktop\" # backslash at the end
     cargo run --features=build-binary ... # TEST with args
     cargo clippy --all-features -- -D warnings # CHECK
     cargo fmt --all -- --check # FORMAT
+    cargo test --workspace --all-features # TEST
     ```
 
 ## Contributing
