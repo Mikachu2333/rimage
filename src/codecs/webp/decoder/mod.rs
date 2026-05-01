@@ -31,9 +31,9 @@ where
     R: Read,
 {
     fn decode(&mut self) -> Result<Image, ImageErrors> {
-        let (width, height) = self
-            .dimensions()
-            .ok_or_else(|| ImageErrors::ImageDecodeErrors("WebP image has no frames".to_string()))?;
+        let (width, height) = self.dimensions().ok_or_else(|| {
+            ImageErrors::ImageDecodeErrors("WebP image has no frames".to_string())
+        })?;
         let color = self.out_colorspace();
 
         let frames = self

@@ -332,9 +332,9 @@ pub fn encoder(name: &str, matches: &ArgMatches) -> Result<AvailableEncoders, Im
                             qtable::WatsonTaylorBorthwick.scaled(quality, quality)
                         }
                         q => {
-                            return Err(ImageErrors::GenericString(format!(
-                                "Unknown qtable: {q}",
-                            )));
+                            return Err(ImageErrors::GenericString(
+                                format!("Unknown qtable: {q}",),
+                            ));
                         }
                     }),
                     None => None,
@@ -360,9 +360,9 @@ pub fn encoder(name: &str, matches: &ArgMatches) -> Result<AvailableEncoders, Im
                             qtable::WatsonTaylorBorthwick.scaled(chroma_quality, chroma_quality)
                         }
                         q => {
-                            return Err(ImageErrors::GenericString(format!(
-                                "Unknown qtable: {q}",
-                            )));
+                            return Err(ImageErrors::GenericString(
+                                format!("Unknown qtable: {q}",),
+                            ));
                         }
                     }),
                     None => None,

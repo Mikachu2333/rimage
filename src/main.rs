@@ -11,9 +11,7 @@ use cli::{
     utils::paths::{collect_files, get_paths},
 };
 use console::{Term, style};
-use indicatif::{
-    DecimalBytes, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle,
-};
+use indicatif::{DecimalBytes, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use indicatif_log_bridge::LogWrapper;
 use little_exif::metadata::Metadata as ExifMetadata;
 use rimage::operations::icc::ApplySRGB;
@@ -409,168 +407,170 @@ fn main() {
                     let state = Arc::clone(&state);
                     let current_dir = current_dir.clone();
                     s.spawn(move |_| {
-                    let image_start_time = std::time::Instant::now();
+                        let image_start_time = std::time::Instant::now();
 
-                    let pb = multi.add(ProgressBar::new_spinner());
-                    pb.set_style(sty_aux_decode.clone());
-                    pb.set_message(format!("{}", input.display()));
-                    pb.enable_steady_tick(Duration::from_millis(100));
+                        let pb = multi.add(ProgressBar::new_spinner());
+                        pb.set_style(sty_aux_decode.clone());
+                        pb.set_message(format!("{}", input.display()));
+                        pb.enable_steady_tick(Duration::from_millis(100));
 
-                    let mut ops: Vec<Box<dyn OperationsTrait>> = Vec::new();
+                        let mut ops: Vec<Box<dyn OperationsTrait>> = Vec::new();
 
-                    let input_size = handle_error!(input, input.metadata()).len();
-                    let input_format = get_file_extension(&input);
-                    let input_modified = get_file_modified_time(&input);
+                        let input_size = handle_error!(input, input.metadata()).len();
+                        let input_format = get_file_extension(&input);
+                        let input_modified = get_file_modified_time(&input);
 
-                    let mut img = handle_error!(input, decode(&input));
-                    let exif_metadata: Option<ExifMetadata> = ExifMetadata::new_from_path(&input)
-                        .ok()
-                        .filter(|_| !strip_metadata);
+                        let mut img = handle_error!(input, decode(&input));
+                        let exif_metadata: Option<ExifMetadata> =
+                            ExifMetadata::new_from_path(&input)
+                                .ok()
+                                .filter(|_| !strip_metadata);
 
-                    pb.set_style(sty_aux_operations.clone());
+                        pb.set_style(sty_aux_operations.clone());
 
-                    // Extract zune-image properties
-                    let (w, h) = img.dimensions();
-                    let pixel_count = (w as u64) * (h as u64);
-                    let aspect_ratio = w as f64 / h as f64;
-                    let colorspace = img.colorspace();
-                    let is_animated = img.is_animated();
-                    let frame_count = img.frames_len();
-                    let has_alpha = colorspace.has_alpha();
-                    let channels = colorspace.num_components();
+                        // Extract zune-image properties
+                        let (w, h) = img.dimensions();
+                        let pixel_count = (w as u64) * (h as u64);
+                        let aspect_ratio = w as f64 / h as f64;
+                        let colorspace = img.colorspace();
+                        let is_animated = img.is_animated();
+                        let frame_count = img.frames_len();
+                        let has_alpha = colorspace.has_alpha();
+                        let channels = colorspace.num_components();
 
-                    let original_bit_depth = img.depth();
+                        let original_bit_depth = img.depth();
 
-                    let mut available_encoder = handle_error!(input, encoder(subcommand, matches));
-                    let output_format = available_encoder.to_extension().to_string();
+                        let mut available_encoder =
+                            handle_error!(input, encoder(subcommand, matches));
+                        let output_format = available_encoder.to_extension().to_string();
 
-                    if let Some(ext) = output.extension() {
-                        output.set_extension({
-                            let mut os_str = ext.to_os_string();
-                            os_str.push(".");
-                            os_str.push(&output_format);
-                            os_str
-                        });
-                    } else {
-                        output.set_extension(&output_format);
-                    }
-
-                    ops.push(Box::new(Depth::new(BitDepth::Eight)));
-                    ops.push(Box::new(ColorspaceConv::new(ColorSpace::RGBA)));
-
-                    if strip_metadata || !SUPPORTS_EXIF.contains(&subcommand) {
-                        ops.push(Box::new(AutoOrient));
-                    }
-
-                    if strip_metadata || !SUPPORTS_ICC.contains(&subcommand) {
-                        ops.push(Box::new(ApplySRGB));
-                    }
-
-                    operations(matches, &img)
-                        .into_iter()
-                        .for_each(|(_, operations)| match operations.name() {
-                            "quantize" => {
-                                ops.push(Box::new(ColorspaceConv::new(ColorSpace::RGBA)));
-                                ops.push(operations);
-                            }
-                            _ => {
-                                ops.push(operations);
-                            }
-                        });
-
-                    for op in ops {
-                        handle_error!(input, op.execute_impl(&mut img));
-                    }
-
-                    pb.set_style(sty_aux_encode.clone());
-
-                    if backup {
-                        let backup_name = format!(
-                            "{}@backup.{}",
-                            input
-                                .file_stem()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or("backup"),
-                            input.extension().and_then(|s| s.to_str()).unwrap_or("bak"),
-                        );
-                        let backup_path = input.with_file_name(&backup_name);
-                        handle_error!(input, fs::rename(&input, backup_path));
-                    }
-
-                    if let Some(parent) = output.parent() {
-                        handle_error!(output, fs::create_dir_all(parent));
-                    }
-                    let output_file = handle_error!(output, File::create(&output));
-
-                    handle_error!(output, available_encoder.encode(&img, output_file));
-
-                    if let Some(actual_metadata) = exif_metadata {
-                        match actual_metadata.write_to_file(&output) {
-                            Ok(_) => {}
-                            Err(e) => log::error!("{}", e),
+                        if let Some(ext) = output.extension() {
+                            output.set_extension({
+                                let mut os_str = ext.to_os_string();
+                                os_str.push(".");
+                                os_str.push(&output_format);
+                                os_str
+                            });
+                        } else {
+                            output.set_extension(&output_format);
                         }
-                    }
 
-                    let output_size = handle_error!(output, output.metadata()).len();
-                    let processing_time = image_start_time.elapsed().as_millis();
-                    let compression_ratio = output_size as f64 / input_size as f64;
-                    let space_saved = input_size as i64 - output_size as i64;
-                    let processed_at = get_current_timestamp();
-                    let output_created = get_current_timestamp();
+                        ops.push(Box::new(Depth::new(BitDepth::Eight)));
+                        ops.push(Box::new(ColorspaceConv::new(ColorSpace::RGBA)));
 
-                    let mut state = state.lock().unwrap();
+                        if strip_metadata || !SUPPORTS_EXIF.contains(&subcommand) {
+                            ops.push(Box::new(AutoOrient));
+                        }
 
-                    let absolute_input_path = normalize_path(&input, &current_dir);
-                    let absolute_output_path = normalize_path(&output, &current_dir);
+                        if strip_metadata || !SUPPORTS_ICC.contains(&subcommand) {
+                            ops.push(Box::new(ApplySRGB));
+                        }
 
-                    state.results.push(Result {
-                        output: output.to_path_buf(),
-                        input_size,
-                        output_size,
-                    });
+                        operations(matches, &img)
+                            .into_iter()
+                            .for_each(|(_, operations)| match operations.name() {
+                                "quantize" => {
+                                    ops.push(Box::new(ColorspaceConv::new(ColorSpace::RGBA)));
+                                    ops.push(operations);
+                                }
+                                _ => {
+                                    ops.push(operations);
+                                }
+                            });
 
-                    let metadata = state.metadata.get_or_insert(Metadata {
-                        input_size: 0,
-                        output_size: 0,
-                        total_images: 0,
-                        compression_ratio: 0.0,
-                        space_saved: 0,
-                        timestamp: get_current_timestamp(),
-                        images: vec![],
-                    });
+                        for op in ops {
+                            handle_error!(input, op.execute_impl(&mut img));
+                        }
 
-                    metadata.input_size += input_size;
-                    metadata.output_size += output_size;
-                    metadata.total_images += 1;
-                    metadata.space_saved += space_saved;
+                        pb.set_style(sty_aux_encode.clone());
 
-                    metadata.images.push(ImageMetadata {
-                        input: absolute_input_path,
-                        output: absolute_output_path,
-                        input_size,
-                        output_size,
-                        compression_ratio,
-                        space_saved,
-                        width: w as u32,
-                        height: h as u32,
-                        pixel_count,
-                        aspect_ratio,
-                        bit_depth: bit_depth_to_string(&original_bit_depth),
-                        color_space: colorspace_to_string(&colorspace),
-                        has_alpha,
-                        is_animated,
-                        frame_count,
-                        channels,
-                        input_format,
-                        output_format,
-                        processed_at,
-                        processing_time_ms: processing_time,
-                        input_modified,
-                        output_created,
-                    });
+                        if backup {
+                            let backup_name = format!(
+                                "{}@backup.{}",
+                                input
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("backup"),
+                                input.extension().and_then(|s| s.to_str()).unwrap_or("bak"),
+                            );
+                            let backup_path = input.with_file_name(&backup_name);
+                            handle_error!(input, fs::rename(&input, backup_path));
+                        }
 
-                    pb.finish_and_clear();
-                    pb_main.inc(1);
+                        if let Some(parent) = output.parent() {
+                            handle_error!(output, fs::create_dir_all(parent));
+                        }
+                        let output_file = handle_error!(output, File::create(&output));
+
+                        handle_error!(output, available_encoder.encode(&img, output_file));
+
+                        if let Some(actual_metadata) = exif_metadata {
+                            match actual_metadata.write_to_file(&output) {
+                                Ok(_) => {}
+                                Err(e) => log::error!("{}", e),
+                            }
+                        }
+
+                        let output_size = handle_error!(output, output.metadata()).len();
+                        let processing_time = image_start_time.elapsed().as_millis();
+                        let compression_ratio = output_size as f64 / input_size as f64;
+                        let space_saved = input_size as i64 - output_size as i64;
+                        let processed_at = get_current_timestamp();
+                        let output_created = get_current_timestamp();
+
+                        let mut state = state.lock().unwrap();
+
+                        let absolute_input_path = normalize_path(&input, &current_dir);
+                        let absolute_output_path = normalize_path(&output, &current_dir);
+
+                        state.results.push(Result {
+                            output: output.to_path_buf(),
+                            input_size,
+                            output_size,
+                        });
+
+                        let metadata = state.metadata.get_or_insert(Metadata {
+                            input_size: 0,
+                            output_size: 0,
+                            total_images: 0,
+                            compression_ratio: 0.0,
+                            space_saved: 0,
+                            timestamp: get_current_timestamp(),
+                            images: vec![],
+                        });
+
+                        metadata.input_size += input_size;
+                        metadata.output_size += output_size;
+                        metadata.total_images += 1;
+                        metadata.space_saved += space_saved;
+
+                        metadata.images.push(ImageMetadata {
+                            input: absolute_input_path,
+                            output: absolute_output_path,
+                            input_size,
+                            output_size,
+                            compression_ratio,
+                            space_saved,
+                            width: w as u32,
+                            height: h as u32,
+                            pixel_count,
+                            aspect_ratio,
+                            bit_depth: bit_depth_to_string(&original_bit_depth),
+                            color_space: colorspace_to_string(&colorspace),
+                            has_alpha,
+                            is_animated,
+                            frame_count,
+                            channels,
+                            input_format,
+                            output_format,
+                            processed_at,
+                            processing_time_ms: processing_time,
+                            input_modified,
+                            output_created,
+                        });
+
+                        pb.finish_and_clear();
+                        pb_main.inc(1);
                     });
                 }
             });

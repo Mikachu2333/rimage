@@ -3,10 +3,8 @@ use std::sync::LazyLock;
 use anyhow::anyhow;
 use regex::Regex;
 
-static WIDTH_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?P<width>\d+)").unwrap());
-static HEIGHT_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?P<height>\d+)").unwrap());
+static WIDTH_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?P<width>\d+)").unwrap());
+static HEIGHT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?P<height>\d+)").unwrap());
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ResizeValue {
