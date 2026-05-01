@@ -32,7 +32,7 @@ impl OperationsTrait for Quantize {
 
     fn execute_impl(&self, image: &mut zune_image::image::Image) -> Result<(), ImageErrors> {
         let (src_width, src_height) = image.dimensions();
-        let channel_len = src_width * src_height * image.depth().size_of();
+        let channel_len = src_width * src_height;
 
         let mut liq = imagequant::new();
 
@@ -86,7 +86,7 @@ impl OperationsTrait for Quantize {
                         |mut acc, (idx, r, g, b, a)| {
                             // SAFETY: idx is bounded by pixels.len() which equals
                             // src_width * src_height, and channels are pre-allocated
-                            // with channel_len = src_width * src_height * size_of::<u8>().
+                            // with channel_len (= src_width * src_height) bytes of U8.
                             // Each alias_mut slice therefore has at least idx+1 elements.
                             unsafe {
                                 debug_assert!(idx < channel_len);
