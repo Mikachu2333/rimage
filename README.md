@@ -89,31 +89,51 @@ rimage mozjpeg -d ./output -r ./inner/image.jpg ./image.jpg
 
 ### Preprocessing
 
-Rimage has pipeline preprocessing options. Simple usage:
+Rimage supports a preprocessing pipeline: resize, color quantization, and alpha premultiply
+run before encoding. Operations execute in CLI argument order.
+
+#### Resize
 
 ```sh
-# will resize image to specified dimensions
+# Resize to fixed dimensions
 rimage mozjpeg --resize 500x200 ./image.jpg
-```
 
-Adjust image dimensions while maintaining the aspect ratio based on the width
-
-```sh
-# Same usage when you'd want to change pic's hight (200h for example)
+# Resize by width, preserving aspect ratio (200h for height)
 rimage mozjpeg --resize 100w ./image.jpg
 ```
 
-If you want to run preprocessing pipeline in specific order, you can do this:
+#### Quantization (color palette reduction)
+
+`--quantization` reduces the number of distinct colors in the image. It is **not** a
+substitute for `-q`/`--quality` — quantization limits the color palette, while
+`-q` controls encoder compression.
 
 ```sh
-# will quantize image with 80% quality, after run resize to 64x64 pixels using the Nearest filter.
+# Quantize to 80% palette quality, then encode at default JPEG quality 75
+rimage mozjpeg --quantization 80 ./image.jpg
+
+# For best compression, combine with a lower quality value
+rimage mozjpeg -q 50 --quantization 80 ./image.jpg
+```
+
+> **Note**: Using `--quantization` without lowering `-q` may produce files nearly as large
+> as without quantization, because sharp palette boundaries (banding) are faithfully
+> reproduced by the encoder at high quality settings.
+
+#### Pipeline ordering
+
+Preprocessing operations run in the order they appear on the command line:
+
+```sh
+# Quantize first, then resize to 64x64 (nearest filter)
 rimage mozjpeg --quantization 80 --resize 64x64 --filter nearest ./image.jpg
 
-# will resize image to 64x64 pixels using the Nearest filter, and after run quantization with 80% quality.
+# Resize first, then quantize
 rimage mozjpeg --resize 64x64 --filter nearest --quantization 80 ./image.jpg
 ```
 
-Note that some preprocessing option are order independent. For example filter option, will apply resize filter to all resize invocations. Same for dithering, applies to every quantization invocations.
+Note that `--filter` applies to all `--resize` invocations, and `--dithering`
+applies to all `--quantization` invocations.
 
 ### Advanced options
 
