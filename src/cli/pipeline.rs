@@ -381,7 +381,7 @@ pub fn encoder(name: &str, matches: &ArgMatches) -> Result<AvailableEncoders, Im
                 OxiPngOptions::from_preset(*matches.get_one::<u8>("effort").unwrap_or(&2));
 
             options.interlace = if matches.get_flag("interlace") {
-                Some(oxipng::Interlacing::Adam7)
+                Some(true)
             } else {
                 None
             };
