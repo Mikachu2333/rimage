@@ -72,7 +72,8 @@ jobs:
       CARGO_BUILD_TARGET: ${{ matrix.target }}
 
     steps:
-      - uses: actions/checkout@v6
+      - name: checkout
+        uses: actions/checkout@v6
 
       - name: set up ubuntu multiarch
         if: startsWith(matrix.os, 'ubuntu') && matrix.target-apt-arch != 'amd64'
@@ -84,11 +85,11 @@ jobs:
           # Clear all existing sources to prevent architecture-leak 404s
           # (e.g. security.ubuntu.com doesn't serve arm64, ports.ubuntu.com doesn't serve amd64)
           sudo rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list
-          # Host arch: standard Ubuntu mirrors (security.ubuntu.com is only queried for host arch)
+          # Host arch: use Azure-local mirror for reliability on GH runners
           sudo tee /etc/apt/sources.list <<EOF
-          deb [arch=$HOST_ARCH] http://archive.ubuntu.com/ubuntu/ $DISTRO_CODENAME main restricted universe multiverse
-          deb [arch=$HOST_ARCH] http://archive.ubuntu.com/ubuntu/ $DISTRO_CODENAME-updates main restricted universe multiverse
-          deb [arch=$HOST_ARCH] http://archive.ubuntu.com/ubuntu/ $DISTRO_CODENAME-backports main restricted universe multiverse
+          deb [arch=$HOST_ARCH] http://azure.archive.ubuntu.com/ubuntu/ $DISTRO_CODENAME main restricted universe multiverse
+          deb [arch=$HOST_ARCH] http://azure.archive.ubuntu.com/ubuntu/ $DISTRO_CODENAME-updates main restricted universe multiverse
+          deb [arch=$HOST_ARCH] http://azure.archive.ubuntu.com/ubuntu/ $DISTRO_CODENAME-backports main restricted universe multiverse
           deb [arch=$HOST_ARCH] http://security.ubuntu.com/ubuntu/ $DISTRO_CODENAME-security main restricted universe multiverse
           deb [arch=$TARGET_ARCH] http://ports.ubuntu.com/ubuntu-ports/ $DISTRO_CODENAME main universe multiverse
           deb [arch=$TARGET_ARCH] http://ports.ubuntu.com/ubuntu-ports/ $DISTRO_CODENAME-updates main universe multiverse
@@ -100,13 +101,13 @@ jobs:
         if: endsWith(matrix.target, '-musl')
         run: |
           sudo apt-get -yq update
-          sudo apt-get -yq install musl-tools musl-dev:${{ matrix.target-apt-arch }}
+          sudo apt-get -yq install --fix-missing musl-tools musl-dev:${{ matrix.target-apt-arch }}
 
       - name: install qemu and aarch64 cross compiler
         if: startsWith(matrix.target, 'aarch64-unknown-linux')
         run: |
           sudo apt-get -yq update
-          sudo apt-get -yq install qemu-user gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6:arm64
+          sudo apt-get -yq install --fix-missing qemu-user gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6:arm64
 
       - name: set musl-g++
         if: matrix.target == 'x86_64-unknown-linux-musl'
@@ -123,26 +124,51 @@ jobs:
           target: ${{ matrix.target }}
           components: rustfmt, clippy
 
-      - uses: ilammy/setup-nasm@v1
-
-      - uses: taiki-e/install-action@nextest
+      - name: install cargo-nextest
+        uses: taiki-e/install-action@nextest
 
       - name: install dependencies (linux)
         if: startsWith(matrix.os, 'ubuntu')
         run: |
           sudo apt-get -yq update
-          sudo apt-get -yq install ninja-build meson
+          sudo apt-get -yq install --fix-missing ninja-build
+          sudo apt-get -yq install --fix-missing meson
+          sudo apt-get -yq install --fix-missing nasm
 
       - name: install dependencies (macos)
         if: startsWith(matrix.os, 'macos')
         run: |
-          brew reinstall ninja meson
+          brew reinstall ninja
+          brew reinstall meson
+          # NASM 3.0+ dropped multipass (-Ox) from -hf output,
+          # which breaks libaom's cmake detection. Pin to 2.16.03.
+          # should be removed once libavif-rs updates.
+          # REF: https://github.com/njaard/libavif-rs/issues/122
+          brew uninstall -f nasm || true
+          brew cleanup nasm || true
+          rm -rf /opt/homebrew/bin/nasm /usr/local/bin/nasm /opt/homebrew/opt/nasm
+
+          curl -fsSLo /tmp/nasm-macosx.zip https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/macosx/nasm-2.16.03-macosx.zip
+          unzip -o /tmp/nasm-macosx.zip -d /tmp
+          sudo cp /tmp/nasm-2.16.03/nasm /usr/local/bin/nasm
+          sudo chmod +x /usr/local/bin/nasm
+          sudo mkdir -p /opt/homebrew/bin
+          sudo cp /tmp/nasm-2.16.03/nasm /opt/homebrew/bin/nasm
+          sudo chmod +x /opt/homebrew/bin/nasm
+
+          echo "/usr/local/bin" >> $GITHUB_PATH
+          echo "ASM_NASM=/opt/homebrew/bin/nasm" >> $GITHUB_ENV
+
+          # Verify NASM is available
+          /usr/local/bin/nasm -version
+          /opt/homebrew/bin/nasm -version
 
       - name: install dependencies (windows)
         if: startsWith(matrix.os, 'windows')
         run: |
           choco install -y ninja
           choco install -y meson
+          choco install -y nasm
 
       - name: install emcc
         if: matrix.target == 'wasm32-unknown-emscripten'
@@ -169,7 +195,7 @@ jobs:
 
       - name: upload cli binary as artifact
         if: matrix.target != 'wasm32-unknown-emscripten'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: rimage-${{ matrix.target }}
           path: |
@@ -206,12 +232,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v6
+      - name: checkout
+        uses: actions/checkout@v6
 
       - name: install dependencies
         run: |
           sudo apt-get -yq update
-          sudo apt-get -yq install ninja-build meson nasm
+          sudo apt-get -yq install --fix-missing ninja-build
+          sudo apt-get -yq install --fix-missing meson
+          sudo apt-get -yq install --fix-missing nasm
 
       - name: install rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
