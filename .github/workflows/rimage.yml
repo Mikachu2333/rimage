@@ -166,9 +166,9 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "${{ matrix.cross }}" == "true" ]]; then
-            cross build --locked --release --all-features --target "${{ matrix.target }}"
+            cross build --release --all-features --target "${{ matrix.target }}"
           else
-            cargo build --locked --release --all-features
+            cargo build --release --all-features
           fi
 
       - name: run tests
@@ -176,11 +176,11 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "${{ matrix.cross }}" == "true" ]]; then
-            cross test --locked --release --all-features --target "${{ matrix.target }}" -- --test-threads=1
-            cross test --locked --release --all-features --target "${{ matrix.target }}" --doc
+            cross test --release --all-features --target "${{ matrix.target }}" -- --test-threads=1
+            cross test --release --all-features --target "${{ matrix.target }}" --doc
           else
-            cargo nextest run --locked --release --all-features
-            cargo test --locked --doc --release --all-features
+            cargo nextest run --release --all-features
+            cargo test --doc --release --all-features
           fi
 
       - name: upload CLI binary
@@ -219,7 +219,7 @@ jobs:
           sudo apt-get -yq install --fix-missing ninja-build meson nasm
 
       - name: Clippy check
-        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
   # Keep the complete WASM configuration in one disabled job. Remove the
   # job-level `if` when the Emscripten build is ready to be enabled again.
@@ -251,4 +251,4 @@ jobs:
         run: |
           set -euo pipefail
           export EMSCRIPTEN_CMAKE_FILE="$(brew --cellar emscripten)/$(brew list --versions emscripten | tr ' ' '\n' | tail -1)/libexec/cmake/Modules/Platform/Emscripten.cmake"
-          cargo check --locked --all-features
+          cargo check --all-features
