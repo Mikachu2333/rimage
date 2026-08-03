@@ -53,66 +53,37 @@ impl EncoderTrait for WebPEncoder {
         let mut writer = ZWriter::new(sink);
 
         if image.is_animated() {
-            let frames = image.flatten_to_u8();
-
-            let mut encoder = webp::AnimEncoder::new(width as u32, height as u32, &self.options);
-
-            encoder.set_bgcolor([0, 0, 0, 0]);
-            encoder.set_loop_count(0); // 0 = loop forever (infinite)
-
-            frames.iter().try_for_each(|frame| {
-                let frame = match image.colorspace() {
-                    ColorSpace::RGB => {
-                        webp::AnimFrame::from_rgb(frame, width as u32, height as u32, 100)
-                    }
-                    ColorSpace::RGBA => {
-                        webp::AnimFrame::from_rgba(frame, width as u32, height as u32, 100)
-                    }
-                    cs => {
-                        return Err(ImageErrors::EncodeErrors(
-                            ImgEncodeErrors::UnsupportedColorspace(
-                                cs,
-                                self.supported_colorspaces(),
-                            ),
-                        ));
-                    }
-                };
-
-                encoder.add_frame(frame);
-
-                Ok(())
-            })?;
-
-            let res = encoder.encode();
-
-            writer.write(&res).map_err(|e| {
-                ImageErrors::EncodeErrors(ImgEncodeErrors::ImageEncodeErrors(format!("{e:?}")))
-            })?;
-
-            Ok(writer.bytes_written())
-        } else {
-            let data = &image.flatten_to_u8()[0];
-
-            let encoder = match image.colorspace() {
-                ColorSpace::RGB => webp::Encoder::from_rgb(data, width as u32, height as u32),
-                ColorSpace::RGBA => webp::Encoder::from_rgba(data, width as u32, height as u32),
-                cs => {
-                    return Err(ImageErrors::EncodeErrors(
-                        ImgEncodeErrors::UnsupportedColorspace(cs, self.supported_colorspaces()),
-                    ));
-                }
-            };
-
-            let res = encoder.encode_advanced(&self.options).map_err(|e| {
-                ImgEncodeErrors::ImageEncodeErrors(format!("webp encoding failed: {e:?}"))
-            })?;
-
-            writer.write(&res).map_err(|e| {
-                ImageErrors::EncodeErrors(ImgEncodeErrors::ImageEncodeErrors(format!("{e:?}")))
-            })?;
-
-            Ok(writer.bytes_written())
+            log::warn!(
+                "WebP animation encoding is not supported reliably; only the first frame will be encoded"
+            );
         }
+
+        let frames = image.flatten_to_u8();
+        let data = frames.first().ok_or_else(|| {
+            ImageErrors::EncodeErrors(ImgEncodeErrors::GenericStatic(
+                "Cannot encode an image with no frames",
+            ))
+        })?;
+
+        let encoder = match image.colorspace() {
+            ColorSpace::RGB => webp::Encoder::from_rgb(data, width as u32, height as u32),
+            ColorSpace::RGBA => webp::Encoder::from_rgba(data, width as u32, height as u32),
+            cs => {
+                return Err(ImageErrors::EncodeErrors(
+                    ImgEncodeErrors::UnsupportedColorspace(cs, self.supported_colorspaces()),
+                ));
+            }
+        };
+
+        let res = encoder.encode_advanced(&self.options).map_err(|e| {
+            ImgEncodeErrors::ImageEncodeErrors(format!("webp encoding failed: {e:?}"))
+        })?;
+
+        writer.write(&res).map_err(|e| {
+            ImageErrors::EncodeErrors(ImgEncodeErrors::ImageEncodeErrors(format!("{e:?}")))
+        })?;
+
+        Ok(writer.bytes_written())
     }
 
     fn supported_colorspaces(&self) -> &'static [ColorSpace] {
@@ -130,10 +101,6 @@ impl EncoderTrait for WebPEncoder {
 
     fn default_depth(&self, _depth: BitDepth) -> BitDepth {
         BitDepth::Eight
-    }
-
-    fn supports_animated_images(&self) -> bool {
-        true
     }
 }
 

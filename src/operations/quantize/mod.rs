@@ -32,7 +32,12 @@ impl OperationsTrait for Quantize {
 
     fn execute_impl(&self, image: &mut zune_image::image::Image) -> Result<(), ImageErrors> {
         let (src_width, src_height) = image.dimensions();
-        let channel_len = src_width * src_height;
+        let channel_len =
+            src_width
+                .checked_mul(src_height)
+                .ok_or(ImageOperationsErrors::Generic(
+                    "Image dimensions overflow during quantization",
+                ))?;
 
         let mut liq = imagequant::new();
 

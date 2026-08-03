@@ -51,3 +51,14 @@ fn resize_animated() {
     assert!(result.is_ok());
     assert_eq!(image.dimensions(), (100, 100));
 }
+
+#[test]
+fn rejects_destination_size_overflow() {
+    let resize = Resize::new(usize::MAX, 2, fr::ResizeAlg::Nearest);
+    let mut image = create_test_image_u8(2, 2, ColorSpace::RGB);
+
+    let result = resize.execute(&mut image);
+
+    assert!(result.is_err());
+    assert_eq!(image.dimensions(), (2, 2));
+}
