@@ -66,10 +66,11 @@ impl ProcessingState {
 
 /// Limits concurrent image processing to prevent OOM with large images.
 ///
-/// A `Mutex<isize>` + `Condvar` permit counter. The main thread calls
-/// [`acquire`](ConcurrencyLimiter::acquire) before spawning work; if the
+/// A `Mutex<isize>` + `Condvar` permit counter. Each worker task calls
+/// [`acquire`](ConcurrencyLimiter::acquire) at the start of its work; if the
 /// counter is at 0 the call blocks. When the returned [`PermitGuard`] is
 /// dropped, the permit is returned and a blocked waiter is woken.
+#[derive(Clone)]
 struct ConcurrencyLimiter {
     inner: Arc<(Mutex<isize>, Condvar)>,
 }
@@ -417,7 +418,7 @@ fn main() {
 
             rayon::scope(|s| {
                 for (input, mut output) in paths {
-                    let _permit = limiter.acquire();
+                    let limiter = limiter.clone();
                     let pb_main = pb_main.clone();
                     let multi = multi.clone();
                     let sty_aux_decode = sty_aux_decode.clone();
@@ -426,7 +427,8 @@ fn main() {
                     let state = Arc::clone(&state);
                     let current_dir = current_dir.clone();
                     s.spawn(move |_| {
-                        let _permit = _permit;
+                        // Acquire the permit on the worker itself: rayon schedules the scope closure onto a pool worker when the caller is not a worker, so blocking the main thread on a permit while a single-threaded pool starves the already-spawned tasks (deadlock).
+                        let _permit = limiter.acquire();
                         let image_start_time = std::time::Instant::now();
 
                         let pb = multi.add(ProgressBar::new_spinner());
