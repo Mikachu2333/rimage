@@ -2,7 +2,12 @@ use std::{io, mem, panic::AssertUnwindSafe};
 
 use mozjpeg::qtable::QTable;
 use zune_core::{bit_depth::BitDepth, bytestream::ZByteWriterTrait, colorspace::ColorSpace};
-use zune_image::{codecs::ImageFormat, errors::ImageErrors, image::Image, traits::EncoderTrait};
+use zune_image::{
+    codecs::ImageFormat,
+    errors::{ImageErrors, ImgEncodeErrors},
+    image::Image,
+    traits::EncoderTrait,
+};
 
 /// Advanced options for MozJpeg encoding
 pub struct MozJpegOptions {
@@ -107,7 +112,12 @@ impl EncoderTrait for MozJpegEncoder {
                 "MozJpeg does not support animated images, only the first frame will be encoded"
             );
         }
-        let data = &image.flatten_to_u8()[0];
+        let frames = image.flatten_to_u8();
+        let data = frames.first().ok_or_else(|| {
+            ImageErrors::EncodeErrors(ImgEncodeErrors::GenericStatic(
+                "Cannot encode an image with no frames",
+            ))
+        })?;
 
         let luma_qtable = self.options.luma_qtable.as_ref();
         let chroma_qtable = self.options.chroma_qtable.as_ref();
@@ -245,14 +255,11 @@ impl EncoderTrait for MozJpegEncoder {
     }
 
     fn supported_bit_depth(&self) -> &'static [BitDepth] {
-        &[BitDepth::Eight, BitDepth::Sixteen]
+        &[BitDepth::Eight]
     }
 
-    fn default_depth(&self, depth: BitDepth) -> BitDepth {
-        match depth {
-            BitDepth::Sixteen | BitDepth::Float32 => BitDepth::Sixteen,
-            _ => BitDepth::Eight,
-        }
+    fn default_depth(&self, _depth: BitDepth) -> BitDepth {
+        BitDepth::Eight
     }
 }
 
