@@ -45,9 +45,26 @@ impl OperationsTrait for Resize {
             ));
         }
 
-        let depth = image.depth().bit_type();
+        let src_width = u32::try_from(src_width).map_err(|_| {
+            ImageOperationsErrors::Generic("Source width exceeds the resize backend limit")
+        })?;
+        let src_height = u32::try_from(src_height).map_err(|_| {
+            ImageOperationsErrors::Generic("Source height exceeds the resize backend limit")
+        })?;
+        let dst_width_u32 = u32::try_from(dst_width).map_err(|_| {
+            ImageOperationsErrors::Generic("Destination width exceeds the resize backend limit")
+        })?;
+        let dst_height_u32 = u32::try_from(dst_height).map_err(|_| {
+            ImageOperationsErrors::Generic("Destination height exceeds the resize backend limit")
+        })?;
 
-        let new_length = dst_width * dst_height * image.depth().size_of();
+        let depth = image.depth().bit_type();
+        let new_length = dst_width
+            .checked_mul(dst_height)
+            .and_then(|pixels| pixels.checked_mul(image.depth().size_of()))
+            .ok_or(ImageOperationsErrors::Generic(
+                "Destination image allocation size overflow",
+            ))?;
 
         #[cfg(feature = "threads")]
         std::thread::scope(|f| {
@@ -65,8 +82,8 @@ impl OperationsTrait for Resize {
                     // old_channel is replaced atomically at the end. Each channel is
                     // processed in its own thread so there is no aliasing across threads.
                     let src_image = fr::images::Image::from_slice_u8(
-                        src_width as u32,
-                        src_height as u32,
+                        src_width,
+                        src_height,
                         unsafe { old_channel.alias_mut() },
                         match depth {
                             BitType::U8 => fr::PixelType::U8,
@@ -81,8 +98,8 @@ impl OperationsTrait for Resize {
                     .map_err(|e| ImageOperationsErrors::GenericString(e.to_string()))?;
 
                     let mut dst_image = fr::images::Image::new(
-                        dst_width as u32,
-                        dst_height as u32,
+                        dst_width_u32,
+                        dst_height_u32,
                         src_image.pixel_type(),
                     );
 
@@ -114,7 +131,13 @@ impl OperationsTrait for Resize {
 
             errors
                 .into_iter()
-                .map(|x| x.join().unwrap())
+                .map(|result| {
+                    result.join().map_err(|_| {
+                        ImageErrors::OperationsError(ImageOperationsErrors::Generic(
+                            "Resize worker panicked",
+                        ))
+                    })?
+                })
                 .collect::<Result<Vec<()>, ImageErrors>>()
         })?;
 
@@ -127,8 +150,8 @@ impl OperationsTrait for Resize {
             // is used only within this iteration and old_channel is replaced
             // before the next iteration.
             let src_image = fr::images::Image::from_slice_u8(
-                src_width as u32,
-                src_height as u32,
+                src_width,
+                src_height,
                 unsafe { old_channel.alias_mut() },
                 match depth {
                     BitType::U8 => fr::PixelType::U8,
@@ -141,7 +164,7 @@ impl OperationsTrait for Resize {
             .map_err(|e| ImageOperationsErrors::GenericString(e.to_string()))?;
 
             let mut dst_image =
-                fr::images::Image::new(dst_width as u32, dst_height as u32, src_image.pixel_type());
+                fr::images::Image::new(dst_width_u32, dst_height_u32, src_image.pixel_type());
 
             let mut resizer = fr::Resizer::new();
 
