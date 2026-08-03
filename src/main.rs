@@ -606,7 +606,7 @@ fn main() {
             thread_pool.install(|| {
                 for batch in paths.chunks(threads) {
                     rayon::scope(|s| {
-                        for (input, output) in batch.iter().cloned() {
+                        for (input, output) in batch {
                     let pb_main = pb_main.clone();
                     let multi = multi.clone();
                     let sty_aux_decode = sty_aux_decode.clone();
@@ -632,11 +632,11 @@ fn main() {
                         let mut ops: Vec<Box<dyn OperationsTrait>> = Vec::new();
 
                         let input_size = handle_error!(input, input.metadata()).len();
-                        let input_format = get_file_extension(&input);
-                        let input_modified = get_file_modified_time(&input);
+                        let input_format = get_file_extension(input);
+                        let input_modified = get_file_modified_time(input);
 
-                        let mut img = handle_error!(input, decode(&input));
-                        let exif_metadata: Option<ExifMetadata> = ExifMetadata::new_from_path(&input)
+                        let mut img = handle_error!(input, decode(input));
+                        let exif_metadata: Option<ExifMetadata> = ExifMetadata::new_from_path(input)
                             .ok()
                             .filter(|_| {
                                 !strip_metadata && SUPPORTS_EXIF.contains(&subcommand)
@@ -691,7 +691,7 @@ fn main() {
                             handle_error!(output, fs::create_dir_all(parent));
                         }
                         let (temporary, output_file) =
-                            handle_error!(output, TemporaryOutput::new(&output));
+                            handle_error!(output, TemporaryOutput::new(output));
 
                         handle_error!(
                             temporary.path,
@@ -715,8 +715,8 @@ fn main() {
                                 input.extension().and_then(|s| s.to_str()).unwrap_or("bak"),
                             );
                             let backup_path = input.with_file_name(&backup_name);
-                            handle_error!(input, fs::hard_link(&input, &backup_path));
-                            if let Err(error) = temporary.publish(&output) {
+                            handle_error!(input, fs::hard_link(input, &backup_path));
+                            if let Err(error) = temporary.publish(output) {
                                 if let Err(cleanup_error) = fs::remove_file(&backup_path) {
                                     log::error!(
                                         "{}: publish failed ({error}); removing the new backup also failed: {cleanup_error}",
@@ -727,8 +727,8 @@ fn main() {
                                 }
                                 return;
                             }
-                            if output_path_key(&input) != output_path_key(&output)
-                                && let Err(error) = fs::remove_file(&input)
+                            if output_path_key(input) != output_path_key(output)
+                                && let Err(error) = fs::remove_file(input)
                             {
                                 log::error!(
                                     "{}: output was published and backup created, but the original input could not be removed: {error}",
@@ -736,7 +736,7 @@ fn main() {
                                 );
                             }
                         } else {
-                            handle_error!(output, temporary.publish(&output));
+                            handle_error!(output, temporary.publish(output));
                         }
 
                         let output_size = handle_error!(output, output.metadata()).len();
@@ -748,8 +748,8 @@ fn main() {
 
                         let mut state = state.lock().unwrap();
 
-                        let absolute_input_path = normalize_path(&input, &current_dir);
-                        let absolute_output_path = normalize_path(&output, &current_dir);
+                        let absolute_input_path = normalize_path(input, &current_dir);
+                        let absolute_output_path = normalize_path(output, &current_dir);
 
                         state.results.push(Result {
                             output: output.to_path_buf(),

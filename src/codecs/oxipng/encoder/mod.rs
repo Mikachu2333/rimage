@@ -65,11 +65,9 @@ impl EncoderTrait for OxiPngEncoder {
         }
         .into_iter()
         .next()
-        .ok_or_else(|| {
-            ImageErrors::EncodeErrors(ImgEncodeErrors::GenericStatic(
-                "Cannot encode an image with no frames",
-            ))
-        })?;
+        .ok_or(ImageErrors::EncodeErrors(ImgEncodeErrors::GenericStatic(
+            "Cannot encode an image with no frames",
+        )))?;
 
         #[allow(unused_mut)]
         let mut img = oxipng::RawImage::new(

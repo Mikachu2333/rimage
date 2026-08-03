@@ -78,11 +78,12 @@ impl EncoderTrait for AvifEncoder {
             );
         }
         let frames = image.flatten_to_u8();
-        let data = frames.first().ok_or_else(|| {
-            ImageErrors::EncodeErrors(ImgEncodeErrors::GenericStatic(
-                "Cannot encode an image with no frames",
-            ))
-        })?;
+        let data =
+            frames
+                .first()
+                .ok_or(ImageErrors::EncodeErrors(ImgEncodeErrors::GenericStatic(
+                    "Cannot encode an image with no frames",
+                )))?;
 
         let mut writer = ZWriter::new(sink);
 
