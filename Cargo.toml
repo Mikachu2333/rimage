@@ -14,12 +14,12 @@ homepage      = "https://lib.rs/rimage"
 include       = ["/README.md", "/Cargo.toml", "/src/**/*.rs"]
 build         = "build.rs"
 
-    [package.metadata.winres]
+    [package.metadata.winresource]
     LegalCopyright  = "Copyright Vladyslav Vladinov © 2024-2026"
     FileDescription = "Powerful img optimization CLI tool by Rust"
 
 [build-dependencies]
-winres = { version = "0.1.12", default-features = false }
+winresource = "0.1.31"
 
 [profile.release]
 lto           = true
@@ -122,14 +122,14 @@ clap = { version = "4.6", features = ["cargo", "string"], optional = true }
 indoc = { version = "2.0", optional = true }
 pretty_env_logger = { version = "0.5.0", optional = true }
 rayon = { version = "1.12.0", optional = true }
-zune-imageprocs = { version = "0.5.0-rc0", features = [
+zune-imageprocs = { version = "0.5.1", features = [
     "exif",
 ], optional = true }
 little_exif = { version = "0.6.23", optional = true }
 indicatif = { version = "0.18", features = ["rayon"], optional = true }
 indicatif-log-bridge = { version = "0.2.3", optional = true }
 console = { version = "0.16", optional = true }
-regex = { version = "1.12", optional = true }
+regex = { version = "1.13", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
 
