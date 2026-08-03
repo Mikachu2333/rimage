@@ -1421,7 +1421,6 @@ dependencies = [
  "av1-grain",
  "bitstream-io",
  "built",
- "cc",
  "cfg-if",
  "interpolate_name",
  "itertools",
@@ -1429,7 +1428,6 @@ dependencies = [
  "libfuzzer-sys",
  "log",
  "maybe-rayon",
- "nasm-rs",
  "new_debug_unreachable",
  "noop_proc_macro",
  "num-derive",
@@ -1519,7 +1517,7 @@ dependencies = [
 
 [[package]]
 name = "rimage"
-version = "0.12.4"
+version = "0.12.5"
 dependencies = [
  "anyhow",
  "clap",
