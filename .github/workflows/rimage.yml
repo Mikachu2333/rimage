@@ -73,7 +73,7 @@ jobs:
 
     steps:
       - name: checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: set up Ubuntu multiarch
         if: startsWith(matrix.os, 'ubuntu') && !matrix.cross && matrix.target-apt-arch != 'amd64'
@@ -187,7 +187,7 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v6
         with:
-          name: rimage-${{ matrix.target }}-${{ github.sha }}
+          name: rimage-${{ matrix.target }}
           path: |
             target/${{ env.CARGO_BUILD_TARGET }}/release/rimage
             target/${{ env.CARGO_BUILD_TARGET }}/release/rimage.exe
@@ -202,7 +202,7 @@ jobs:
 
     steps:
       - name: checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -235,7 +235,7 @@ jobs:
 
     steps:
       - name: checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
