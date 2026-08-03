@@ -52,3 +52,17 @@ fn apply_srgb_profile() {
     // Assert ICC profile is set correctly
     assert_eq!(*image.metadata().icc_chunk().unwrap(), icc);
 }
+
+#[test]
+fn apply_icc_profile_to_u16_without_panicking() {
+    let mut image = create_test_image_u16(8, 8, ColorSpace::RGB);
+    image
+        .metadata_mut()
+        .set_icc_chunk(Profile::new_srgb().icc().unwrap());
+
+    let result = ApplyICC::new(Profile::new_srgb()).execute(&mut image);
+
+    assert!(result.is_ok());
+    assert_eq!(image.depth().bit_type(), BitType::U16);
+    assert_eq!(image.dimensions(), (8, 8));
+}

@@ -1,7 +1,12 @@
 use std::{
+    collections::HashSet,
     fs::{self, File},
+    io::Write,
     path::{Path, PathBuf},
-    sync::{Arc, Condvar, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -27,8 +32,6 @@ use crate::cli::pipeline::encoder;
 
 mod cli;
 
-const DEBUG: bool = cfg!(debug_assertions);
-
 macro_rules! handle_error {
     ( $path:expr, $e:expr ) => {
         match $e {
@@ -41,7 +44,9 @@ macro_rules! handle_error {
     };
 }
 
-const SUPPORTS_EXIF: &[&str; 7] = &["mozjpeg", "oxipng", "png", "jpeg", "jpegxl", "tiff", "webp"];
+const SUPPORTS_EXIF: &[&str; 7] = &[
+    "mozjpeg", "oxipng", "png", "jpeg", "jpeg_xl", "tiff", "webp",
+];
 const SUPPORTS_ICC: &[&str; 2] = &["mozjpeg", "oxipng"];
 
 struct Result {
@@ -64,50 +69,6 @@ impl ProcessingState {
     }
 }
 
-/// Limits concurrent image processing to prevent OOM with large images.
-///
-/// A `Mutex<isize>` + `Condvar` permit counter. Each worker task calls
-/// [`acquire`](ConcurrencyLimiter::acquire) at the start of its work; if the
-/// counter is at 0 the call blocks. When the returned [`PermitGuard`] is
-/// dropped, the permit is returned and a blocked waiter is woken.
-#[derive(Clone)]
-struct ConcurrencyLimiter {
-    inner: Arc<(Mutex<isize>, Condvar)>,
-}
-
-impl ConcurrencyLimiter {
-    fn new(max: usize) -> Self {
-        Self {
-            inner: Arc::new((Mutex::new(max as isize), Condvar::new())),
-        }
-    }
-
-    fn acquire(&self) -> PermitGuard {
-        let (ref lock, ref cvar) = *self.inner;
-        let mut count = lock.lock().unwrap();
-        while *count <= 0 {
-            count = cvar.wait(count).unwrap();
-        }
-        *count -= 1;
-        PermitGuard {
-            inner: Arc::clone(&self.inner),
-        }
-    }
-}
-
-struct PermitGuard {
-    inner: Arc<(Mutex<isize>, Condvar)>,
-}
-
-impl Drop for PermitGuard {
-    fn drop(&mut self) {
-        let (ref lock, ref cvar) = *self.inner;
-        let mut count = lock.lock().unwrap();
-        *count += 1;
-        cvar.notify_one();
-    }
-}
-
 /// RAII guard that updates progress bars on drop, ensuring they advance
 /// even when a worker returns early due to an error.
 struct FinishGuard {
@@ -120,6 +81,158 @@ impl Drop for FinishGuard {
         self.pb.finish_and_clear();
         self.pb_main.inc(1);
     }
+}
+
+static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+struct TemporaryOutput {
+    path: PathBuf,
+    published: bool,
+}
+
+impl TemporaryOutput {
+    fn new(target: &Path) -> std::io::Result<(Self, File)> {
+        let parent = target.parent().unwrap_or_else(|| Path::new("."));
+        let stem = target
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("image");
+        let extension = target.extension().and_then(|value| value.to_str());
+
+        for _ in 0..100 {
+            let id = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let mut name = format!(".{stem}.rimage-{}-{id}", std::process::id());
+            if let Some(extension) = extension {
+                name.push('.');
+                name.push_str(extension);
+            }
+            let path = parent.join(name);
+            match File::create_new(&path) {
+                Ok(file) => {
+                    return Ok((
+                        Self {
+                            path,
+                            published: false,
+                        },
+                        file,
+                    ));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+        }
+
+        Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not allocate a unique temporary output file",
+        ))
+    }
+
+    #[cfg(not(windows))]
+    fn publish(mut self, target: &Path) -> std::io::Result<()> {
+        fs::rename(&self.path, target)?;
+        self.published = true;
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn publish(mut self, target: &Path) -> std::io::Result<()> {
+        if !target.exists() {
+            fs::rename(&self.path, target)?;
+            self.published = true;
+            return Ok(());
+        }
+
+        let (mut previous, previous_file) = Self::new(target)?;
+        drop(previous_file);
+        fs::remove_file(&previous.path)?;
+        fs::rename(target, &previous.path)?;
+
+        match fs::rename(&self.path, target) {
+            Ok(()) => {
+                self.published = true;
+                previous.published = true;
+                if let Err(error) = fs::remove_file(&previous.path) {
+                    log::warn!(
+                        "Failed to remove replaced output {}: {error}",
+                        previous.path.display()
+                    );
+                }
+                Ok(())
+            }
+            Err(publish_error) => match fs::rename(&previous.path, target) {
+                Ok(()) => {
+                    previous.published = true;
+                    Err(publish_error)
+                }
+                Err(restore_error) => {
+                    previous.published = true;
+                    Err(std::io::Error::new(
+                        publish_error.kind(),
+                        format!(
+                            "publish failed: {publish_error}; restoring the previous output also failed: {restore_error}; previous output remains at {}",
+                            previous.path.display()
+                        ),
+                    ))
+                }
+            },
+        }
+    }
+}
+
+impl Drop for TemporaryOutput {
+    fn drop(&mut self) {
+        if !self.published {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+fn append_output_extension(path: &mut PathBuf, extension: &str) {
+    if let Some(current) = path.extension() {
+        let mut combined = current.to_os_string();
+        combined.push(".");
+        combined.push(extension);
+        path.set_extension(combined);
+    } else {
+        path.set_extension(extension);
+    }
+}
+
+fn output_path_key(path: &Path) -> String {
+    let key = path.to_string_lossy().into_owned();
+    if cfg!(windows) {
+        key.to_lowercase()
+    } else {
+        key
+    }
+}
+
+fn valid_suffix(suffix: &str) -> bool {
+    !suffix.is_empty()
+        && suffix != "."
+        && suffix != ".."
+        && !suffix.ends_with(['.', ' '])
+        && !suffix.chars().any(|character| {
+            character.is_control()
+                || matches!(
+                    character,
+                    '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
+                )
+        })
+}
+
+fn size_ratio(output_size: u64, input_size: u64) -> f64 {
+    if input_size == 0 {
+        0.0
+    } else {
+        output_size as f64 / input_size as f64
+    }
+}
+
+fn space_saved(input_size: u64, output_size: u64) -> i64 {
+    let difference = i128::from(input_size) - i128::from(output_size);
+    difference.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -360,10 +473,13 @@ fn main() {
     match matches.subcommand() {
         Some((subcommand, matches)) => {
             let threads = matches.get_one::<u8>("threads").copied().unwrap_or(1) as usize;
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(threads)
-                .build_global()
-                .unwrap();
+            let thread_pool = match rayon::ThreadPoolBuilder::new().num_threads(threads).build() {
+                Ok(pool) => pool,
+                Err(error) => {
+                    log::error!("Failed to create image worker pool: {error}");
+                    return;
+                }
+            };
 
             // Normalize file paths: resolve ~, relative paths, canonicalize
             let files: Vec<PathBuf> = matches
@@ -372,9 +488,7 @@ fn main() {
                 .map(|p| normalize_path(p, &current_dir))
                 .collect();
             let files = collect_files(&files);
-            if DEBUG {
-                dbg!(&files);
-            }
+            log::debug!("Resolved files: {files:#?}");
 
             let file_count = files.iter().filter(|f| f.is_file()).count() as u64;
 
@@ -402,6 +516,13 @@ fn main() {
                 .unwrap_or(PathBuf::from("metadata.json"));
 
             let suffix = matches.get_one::<String>("suffix").cloned();
+            if suffix
+                .as_deref()
+                .is_some_and(|suffix| !valid_suffix(suffix))
+            {
+                log::error!("Suffix must be a valid single filename component");
+                return;
+            }
 
             if quiet || no_progress {
                 multi.set_draw_target(ProgressDrawTarget::hidden());
@@ -413,12 +534,58 @@ fn main() {
                 pb_main.set_draw_target(ProgressDrawTarget::hidden());
             }
 
-            let paths: Vec<_> = get_paths(files, out_dir, suffix, recursive).collect();
-            let limiter = ConcurrencyLimiter::new(threads);
+            let output_extension = match encoder(subcommand, matches) {
+                Ok(encoder) => encoder.to_extension(),
+                Err(error) => {
+                    log::error!("Failed to initialize encoder: {error}");
+                    return;
+                }
+            };
+            let paths = get_paths(files, out_dir, suffix, recursive)
+                .map(|(input, mut output)| {
+                    append_output_extension(&mut output, output_extension);
+                    (input, output)
+                })
+                .collect::<Vec<_>>();
 
-            rayon::scope(|s| {
-                for (input, mut output) in paths {
-                    let limiter = limiter.clone();
+            let input_paths = paths
+                .iter()
+                .map(|(input, _)| output_path_key(input))
+                .collect::<HashSet<_>>();
+            let mut output_paths = HashSet::with_capacity(paths.len());
+            for (input, output) in &paths {
+                let input_key = output_path_key(input);
+                let output_key = output_path_key(output);
+                if !output_paths.insert(output_key.clone()) {
+                    log::error!(
+                        "Multiple input files resolve to the same output path: {}",
+                        output.display()
+                    );
+                    return;
+                }
+                if input_key != output_key && input_paths.contains(&output_key) {
+                    log::error!(
+                        "Output path would overwrite another input file: {}",
+                        output.display()
+                    );
+                    return;
+                }
+            }
+            if output_metadata {
+                let metadata_key = output_path_key(&metadata_path);
+                if input_paths.contains(&metadata_key) || output_paths.contains(&metadata_key) {
+                    log::error!(
+                        "Metadata path conflicts with an input or output image: {}",
+                        metadata_path.display()
+                    );
+                    return;
+                }
+            }
+
+            thread_pool.install(|| {
+                for batch in paths.chunks(threads) {
+                    rayon::scope(|s| {
+                        for (input, output) in batch.iter().cloned() {
                     let pb_main = pb_main.clone();
                     let multi = multi.clone();
                     let sty_aux_decode = sty_aux_decode.clone();
@@ -427,8 +594,6 @@ fn main() {
                     let state = Arc::clone(&state);
                     let current_dir = current_dir.clone();
                     s.spawn(move |_| {
-                        // Acquire the permit on the worker itself: rayon schedules the scope closure onto a pool worker when the caller is not a worker, so blocking the main thread on a permit while a single-threaded pool starves the already-spawned tasks (deadlock).
-                        let _permit = limiter.acquire();
                         let image_start_time = std::time::Instant::now();
 
                         let pb = multi.add(ProgressBar::new_spinner());
@@ -450,10 +615,11 @@ fn main() {
                         let input_modified = get_file_modified_time(&input);
 
                         let mut img = handle_error!(input, decode(&input));
-                        let exif_metadata: Option<ExifMetadata> =
-                            ExifMetadata::new_from_path(&input)
-                                .ok()
-                                .filter(|_| !strip_metadata);
+                        let exif_metadata: Option<ExifMetadata> = ExifMetadata::new_from_path(&input)
+                            .ok()
+                            .filter(|_| {
+                                !strip_metadata && SUPPORTS_EXIF.contains(&subcommand)
+                            });
 
                         pb.set_style(sty_aux_operations.clone());
 
@@ -473,32 +639,19 @@ fn main() {
                             handle_error!(input, encoder(subcommand, matches));
                         let output_format = available_encoder.to_extension().to_string();
 
-                        if let Some(ext) = output.extension() {
-                            output.set_extension({
-                                let mut os_str = ext.to_os_string();
-                                os_str.push(".");
-                                os_str.push(&output_format);
-                                os_str
-                            });
-                        } else {
-                            output.set_extension(&output_format);
+                        if strip_metadata || !SUPPORTS_ICC.contains(&subcommand) {
+                            ops.push(Box::new(ApplySRGB));
                         }
-
-                        ops.push(Box::new(Depth::new(BitDepth::Eight)));
-                        ops.push(Box::new(ColorspaceConv::new(ColorSpace::RGBA)));
 
                         if strip_metadata || !SUPPORTS_EXIF.contains(&subcommand) {
                             ops.push(Box::new(AutoOrient));
-                        }
-
-                        if strip_metadata || !SUPPORTS_ICC.contains(&subcommand) {
-                            ops.push(Box::new(ApplySRGB));
                         }
 
                         operations(matches, &img)
                             .into_iter()
                             .for_each(|(_, operations)| match operations.name() {
                                 "quantize" => {
+                                    ops.push(Box::new(Depth::new(BitDepth::Eight)));
                                     ops.push(Box::new(ColorspaceConv::new(ColorSpace::RGBA)));
                                     ops.push(operations);
                                 }
@@ -508,10 +661,28 @@ fn main() {
                             });
 
                         for op in ops {
-                            handle_error!(input, op.execute_impl(&mut img));
+                            handle_error!(input, op.execute(&mut img));
                         }
 
                         pb.set_style(sty_aux_encode.clone());
+
+                        if let Some(parent) = output.parent() {
+                            handle_error!(output, fs::create_dir_all(parent));
+                        }
+                        let (temporary, output_file) =
+                            handle_error!(output, TemporaryOutput::new(&output));
+
+                        handle_error!(
+                            temporary.path,
+                            available_encoder.encode(&img, output_file)
+                        );
+
+                        if let Some(actual_metadata) = exif_metadata {
+                            handle_error!(
+                                temporary.path,
+                                actual_metadata.write_to_file(&temporary.path)
+                            );
+                        }
 
                         if backup {
                             let backup_name = format!(
@@ -523,27 +694,34 @@ fn main() {
                                 input.extension().and_then(|s| s.to_str()).unwrap_or("bak"),
                             );
                             let backup_path = input.with_file_name(&backup_name);
-                            handle_error!(input, fs::rename(&input, backup_path));
-                        }
-
-                        if let Some(parent) = output.parent() {
-                            handle_error!(output, fs::create_dir_all(parent));
-                        }
-                        let output_file = handle_error!(output, File::create(&output));
-
-                        handle_error!(output, available_encoder.encode(&img, output_file));
-
-                        if let Some(actual_metadata) = exif_metadata {
-                            match actual_metadata.write_to_file(&output) {
-                                Ok(_) => {}
-                                Err(e) => log::error!("{}", e),
+                            handle_error!(input, fs::hard_link(&input, &backup_path));
+                            if let Err(error) = temporary.publish(&output) {
+                                if let Err(cleanup_error) = fs::remove_file(&backup_path) {
+                                    log::error!(
+                                        "{}: publish failed ({error}); removing the new backup also failed: {cleanup_error}",
+                                        output.display()
+                                    );
+                                } else {
+                                    log::error!("{}: {error}", output.display());
+                                }
+                                return;
                             }
+                            if output_path_key(&input) != output_path_key(&output)
+                                && let Err(error) = fs::remove_file(&input)
+                            {
+                                log::error!(
+                                    "{}: output was published and backup created, but the original input could not be removed: {error}",
+                                    input.display()
+                                );
+                            }
+                        } else {
+                            handle_error!(output, temporary.publish(&output));
                         }
 
                         let output_size = handle_error!(output, output.metadata()).len();
                         let processing_time = image_start_time.elapsed().as_millis();
-                        let compression_ratio = output_size as f64 / input_size as f64;
-                        let space_saved = input_size as i64 - output_size as i64;
+                        let compression_ratio = size_ratio(output_size, input_size);
+                        let space_saved = space_saved(input_size, output_size);
                         let processed_at = get_current_timestamp();
                         let output_created = get_current_timestamp();
 
@@ -568,10 +746,10 @@ fn main() {
                             images: vec![],
                         });
 
-                        metadata.input_size += input_size;
-                        metadata.output_size += output_size;
-                        metadata.total_images += 1;
-                        metadata.space_saved += space_saved;
+                        metadata.input_size = metadata.input_size.saturating_add(input_size);
+                        metadata.output_size = metadata.output_size.saturating_add(output_size);
+                        metadata.total_images = metadata.total_images.saturating_add(1);
+                        metadata.space_saved = metadata.space_saved.saturating_add(space_saved);
 
                         metadata.images.push(ImageMetadata {
                             input: absolute_input_path,
@@ -597,6 +775,8 @@ fn main() {
                             input_modified,
                             output_created,
                         });
+                            });
+                        }
                     });
                 }
             });
@@ -635,8 +815,7 @@ fn main() {
                     .unwrap();
 
                     for result in state.results.iter() {
-                        let difference =
-                            (result.output_size as f64 / result.input_size as f64) * 100.0;
+                        let difference = size_ratio(result.output_size, result.input_size) * 100.0;
 
                         term.write_line(&format!(
                             "{:<path_width$} {} > {} {}",
@@ -653,22 +832,29 @@ fn main() {
                     }
                 }
 
-                let total_input_size = state.results.iter().map(|r| r.input_size).sum::<u64>();
-                let total_output_size = state.results.iter().map(|r| r.output_size).sum::<u64>();
+                let total_input_size = state.results.iter().fold(0u64, |total, result| {
+                    total.saturating_add(result.input_size)
+                });
+                let total_output_size = state.results.iter().fold(0u64, |total, result| {
+                    total.saturating_add(result.output_size)
+                });
 
-                let difference = (total_output_size as f64 / total_input_size as f64) * 100.0;
+                if !state.results.is_empty() {
+                    let difference = size_ratio(total_output_size, total_input_size) * 100.0;
 
-                term.write_line(&format!(
-                    "Total: {} > {} {}",
-                    style(DecimalBytes(total_input_size)).blue(),
-                    style(DecimalBytes(total_output_size)).blue(),
-                    if difference > 100.0 {
-                        style(format!("{:.2}%", difference - 100.0)).red()
-                    } else {
-                        style(format!("{:.2}%", difference - 100.0)).green()
-                    },
-                ))
-                .unwrap();
+                    if let Err(error) = term.write_line(&format!(
+                        "Total: {} > {} {}",
+                        style(DecimalBytes(total_input_size)).blue(),
+                        style(DecimalBytes(total_output_size)).blue(),
+                        if difference > 100.0 {
+                            style(format!("{:.2}%", difference - 100.0)).red()
+                        } else {
+                            style(format!("{:.2}%", difference - 100.0)).green()
+                        },
+                    )) {
+                        log::error!("Failed to write output summary: {error}");
+                    }
+                }
             }
 
             let rust_log_hint = if cfg!(windows) {
@@ -687,8 +873,40 @@ fn main() {
             }
 
             if output_metadata && let Some(metadata) = state.metadata.as_ref() {
-                let json = serde_json::to_string_pretty(metadata).unwrap();
-                fs::write(metadata_path, json).unwrap();
+                match serde_json::to_string_pretty(metadata) {
+                    Ok(json) => {
+                        if let Some(parent) = metadata_path
+                            .parent()
+                            .filter(|parent| !parent.as_os_str().is_empty())
+                            && let Err(error) = fs::create_dir_all(parent)
+                        {
+                            log::error!(
+                                "Failed to create metadata directory {}: {error}",
+                                parent.display()
+                            );
+                            return;
+                        }
+                        match TemporaryOutput::new(&metadata_path) {
+                            Ok((temporary, mut file)) => {
+                                if let Err(error) = file
+                                    .write_all(json.as_bytes())
+                                    .and_then(|_| file.flush())
+                                    .and_then(|_| temporary.publish(&metadata_path))
+                                {
+                                    log::error!(
+                                        "Failed to write metadata {}: {error}",
+                                        metadata_path.display()
+                                    );
+                                }
+                            }
+                            Err(error) => log::error!(
+                                "Failed to create metadata output {}: {error}",
+                                metadata_path.display()
+                            ),
+                        }
+                    }
+                    Err(error) => log::error!("Failed to serialize metadata: {error}"),
+                }
             }
         }
         None => unreachable!("clap ensures a subcommand is always provided"),

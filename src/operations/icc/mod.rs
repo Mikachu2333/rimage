@@ -85,10 +85,32 @@ impl OperationsTrait for ApplyICC {
         )
         .map_err(|e| ImageOperationsErrors::GenericString(e.to_string()))?;
 
+        let bit_type = image.depth().bit_type();
         for frame in image.frames_mut() {
-            let mut buffer = frame.flatten::<u8>();
-            t.transform_in_place(&mut buffer);
-            let _ = std::mem::replace(frame, Frame::from_u8(&buffer, colorspace, 0, 0));
+            let numerator = frame.numerator();
+            let denominator = frame.denominator();
+
+            match bit_type {
+                BitType::U8 => {
+                    let mut buffer = frame.flatten::<u8>();
+                    t.transform_in_place(&mut buffer);
+                    *frame = Frame::from_u8(&buffer, colorspace, numerator, denominator);
+                }
+                BitType::U16 => {
+                    let mut bytes = frame.u16_to_native_endian();
+                    t.transform_in_place(&mut bytes);
+                    let samples = bytes
+                        .chunks_exact(2)
+                        .map(|sample| u16::from_ne_bytes([sample[0], sample[1]]))
+                        .collect::<Vec<_>>();
+                    *frame = Frame::from_u16(&samples, colorspace, numerator, denominator);
+                }
+                bit_type => {
+                    return Err(ImageErrors::OperationsError(
+                        ImageOperationsErrors::UnsupportedType(self.name(), bit_type),
+                    ));
+                }
+            }
         }
 
         image.metadata_mut().set_icc_chunk(

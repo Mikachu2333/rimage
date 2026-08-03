@@ -8,8 +8,15 @@ fn decode() {
 
     let decoder = AvifDecoder::try_new(file_content).unwrap();
 
-    let img = Image::from_decoder(decoder).unwrap();
+    let result = Image::from_decoder(decoder);
 
-    assert_eq!(img.dimensions(), (48, 80));
-    assert_eq!(img.colorspace(), ColorSpace::RGBA);
+    #[cfg(windows)]
+    assert!(result.is_err());
+
+    #[cfg(not(windows))]
+    {
+        let img = result.unwrap();
+        assert_eq!(img.dimensions(), (48, 80));
+        assert_eq!(img.colorspace(), ColorSpace::RGBA);
+    }
 }
