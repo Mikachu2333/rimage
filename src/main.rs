@@ -137,46 +137,13 @@ impl TemporaryOutput {
 
     #[cfg(windows)]
     fn publish(mut self, target: &Path) -> std::io::Result<()> {
-        if !target.exists() {
+        if target.exists() {
+            replace_file_windows(target, &self.path)?;
+        } else {
             fs::rename(&self.path, target)?;
-            self.published = true;
-            return Ok(());
         }
-
-        let (mut previous, previous_file) = Self::new(target)?;
-        drop(previous_file);
-        fs::remove_file(&previous.path)?;
-        fs::rename(target, &previous.path)?;
-
-        match fs::rename(&self.path, target) {
-            Ok(()) => {
-                self.published = true;
-                previous.published = true;
-                if let Err(error) = fs::remove_file(&previous.path) {
-                    log::warn!(
-                        "Failed to remove replaced output {}: {error}",
-                        previous.path.display()
-                    );
-                }
-                Ok(())
-            }
-            Err(publish_error) => match fs::rename(&previous.path, target) {
-                Ok(()) => {
-                    previous.published = true;
-                    Err(publish_error)
-                }
-                Err(restore_error) => {
-                    previous.published = true;
-                    Err(std::io::Error::new(
-                        publish_error.kind(),
-                        format!(
-                            "publish failed: {publish_error}; restoring the previous output also failed: {restore_error}; previous output remains at {}",
-                            previous.path.display()
-                        ),
-                    ))
-                }
-            },
-        }
+        self.published = true;
+        Ok(())
     }
 }
 
@@ -185,6 +152,60 @@ impl Drop for TemporaryOutput {
         if !self.published {
             let _ = fs::remove_file(&self.path);
         }
+    }
+}
+
+#[cfg(windows)]
+fn replace_file_windows(target: &Path, replacement: &Path) -> std::io::Result<()> {
+    use std::{iter, os::windows::ffi::OsStrExt, ptr};
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn ReplaceFileW(
+            replaced_file_name: *const u16,
+            replacement_file_name: *const u16,
+            backup_file_name: *const u16,
+            replace_flags: u32,
+            exclude: *mut std::ffi::c_void,
+            reserved: *mut std::ffi::c_void,
+        ) -> i32;
+    }
+
+    let target_units = target.as_os_str().encode_wide().collect::<Vec<_>>();
+    let replacement_units = replacement.as_os_str().encode_wide().collect::<Vec<_>>();
+    if target_units.contains(&0) || replacement_units.contains(&0) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Windows file paths cannot contain an embedded NUL",
+        ));
+    }
+    let target_wide = target_units
+        .into_iter()
+        .chain(iter::once(0))
+        .collect::<Vec<_>>();
+    let replacement_wide = replacement_units
+        .into_iter()
+        .chain(iter::once(0))
+        .collect::<Vec<_>>();
+
+    // SAFETY: Both path buffers are NUL-terminated and remain alive for the
+    // duration of the call. Optional pointers are null as required by the API,
+    // and flags are zero. ReplaceFileW does not retain any supplied pointers.
+    let result = unsafe {
+        ReplaceFileW(
+            target_wide.as_ptr(),
+            replacement_wide.as_ptr(),
+            ptr::null(),
+            0,
+            ptr::null_mut(),
+            ptr::null_mut(),
+        )
+    };
+
+    if result == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
     }
 }
 
@@ -888,11 +909,12 @@ fn main() {
                         }
                         match TemporaryOutput::new(&metadata_path) {
                             Ok((temporary, mut file)) => {
-                                if let Err(error) = file
-                                    .write_all(json.as_bytes())
-                                    .and_then(|_| file.flush())
-                                    .and_then(|_| temporary.publish(&metadata_path))
-                                {
+                                let write_result =
+                                    file.write_all(json.as_bytes()).and_then(|_| file.flush());
+                                drop(file);
+                                let write_result =
+                                    write_result.and_then(|_| temporary.publish(&metadata_path));
+                                if let Err(error) = write_result {
                                     log::error!(
                                         "Failed to write metadata {}: {error}",
                                         metadata_path.display()
@@ -957,5 +979,29 @@ mod tests {
         let result = join_normalized(&base, rel);
         let expected = base.join("subdir").join("1.jpg");
         assert_eq!(result, expected);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn temporary_output_replaces_existing_file_with_replace_file_w() {
+        let root = std::env::temp_dir().join(format!(
+            "rimage-replace-file-{}-{}",
+            std::process::id(),
+            TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("image.png");
+        fs::write(&target, b"old contents").unwrap();
+
+        let (temporary, mut replacement) = TemporaryOutput::new(&target).unwrap();
+        let replacement_path = temporary.path.clone();
+        replacement.write_all(b"new contents").unwrap();
+        replacement.flush().unwrap();
+        drop(replacement);
+        temporary.publish(&target).unwrap();
+
+        assert_eq!(fs::read(&target).unwrap(), b"new contents");
+        assert!(!replacement_path.exists());
+        fs::remove_dir_all(root).unwrap();
     }
 }
