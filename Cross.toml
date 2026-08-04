@@ -2,7 +2,7 @@
 # container (see src/docker/local.rs), so build artifacts appear under
 # `target/<triple>/release/` on the host and can be uploaded by the workflow.
 #
-# cross 0.2.5's release image (`:0.2.5`) is based on an old glibc (Ubuntu
+# cross 0.2.5's release image (`:0.2.5`) is based on an old glibc (Debian
 # buster), which cannot run current Rust host toolchains. Pin a newer
 # main-branch image (Ubuntu 24.04 base) by digest so the toolchain cannot
 # change silently. Refresh with:
