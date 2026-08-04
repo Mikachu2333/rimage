@@ -1,7 +1,7 @@
 use winresource::{VersionInfo, WindowsResource};
 
 // This is the pre-release version number.
-const VERSION_PRE: u16 = 3;
+const VERSION_PRE: u16 = 0;
 
 fn main() {
     // only run if target os is windows
