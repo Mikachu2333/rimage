@@ -121,24 +121,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          brew install ninja meson || brew upgrade ninja meson
-
-          # NASM 3.0+ dropped multipass (-Ox) from -hf output, which breaks
-          # libaom's CMake detection. Remove this pin after libavif-rs updates.
-          # REF: https://github.com/njaard/libavif-rs/issues/122
-          brew uninstall -f nasm || true
-          brew cleanup nasm || true
-          rm -rf /opt/homebrew/bin/nasm /usr/local/bin/nasm /opt/homebrew/opt/nasm
-          curl --fail --show-error --silent --location \
-            --output /tmp/nasm-macosx.zip \
-            https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/macosx/nasm-2.16.03-macosx.zip
-          unzip -o /tmp/nasm-macosx.zip -d /tmp
-          sudo install -m 0755 /tmp/nasm-2.16.03/nasm /usr/local/bin/nasm
-          sudo mkdir -p /opt/homebrew/bin
-          sudo install -m 0755 /tmp/nasm-2.16.03/nasm /opt/homebrew/bin/nasm
-          echo "/usr/local/bin" >> "$GITHUB_PATH"
-          echo "ASM_NASM=/opt/homebrew/bin/nasm" >> "$GITHUB_ENV"
-          /usr/local/bin/nasm -version
+          brew install ninja meson nasm yasm || brew upgrade ninja meson nasm yasm
 
       - name: install Windows dependencies
         if: startsWith(matrix.os, 'windows')
