@@ -672,10 +672,7 @@ fn main() {
                         let (temporary, output_file) =
                             handle_error!(output, TemporaryOutput::new(&output));
 
-                        handle_error!(
-                            temporary.path,
-                            available_encoder.encode(&img, output_file)
-                        );
+                        handle_error!(output, available_encoder.encode(&img, output_file));
 
                         if let Some(actual_metadata) = exif_metadata {
                             handle_error!(
@@ -694,7 +691,13 @@ fn main() {
                                 input.extension().and_then(|s| s.to_str()).unwrap_or("bak"),
                             );
                             let backup_path = input.with_file_name(&backup_name);
-                            handle_error!(input, fs::hard_link(&input, &backup_path));
+                            if let Err(hard_link_error) = fs::hard_link(&input, &backup_path) {
+                                log::debug!(
+                                    "{}: hard link backup failed, falling back to copy: {hard_link_error}",
+                                    input.display()
+                                );
+                                handle_error!(input, fs::copy(&input, &backup_path));
+                            }
                             if let Err(error) = temporary.publish(&output) {
                                 if let Err(cleanup_error) = fs::remove_file(&backup_path) {
                                     log::error!(
