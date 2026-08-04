@@ -106,7 +106,7 @@ jobs:
             packages+=(musl-tools "musl-dev:${{ matrix.target-apt-arch }}")
           fi
           if [[ "${{ matrix.target }}" == aarch64-unknown-linux-* ]]; then
-            packages+=(qemu-user gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6:arm64)
+            packages+=(qemu-user gcc-aarch64-linux-gnu g++-aarch64-linux-gnu "libc6:${{ matrix.target-apt-arch }}")
           fi
           sudo apt-get -yq update
           sudo apt-get -yq install --fix-missing "${packages[@]}"
