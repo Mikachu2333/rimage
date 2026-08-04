@@ -113,7 +113,7 @@ impl EncoderTrait for MozJpegEncoder {
             );
         }
         let frames = image.flatten_to_u8();
-        let data = frames.first().ok_or_else(|| {
+        let data = frames.first().ok_or({
             ImageErrors::EncodeErrors(ImgEncodeErrors::GenericStatic(
                 "Cannot encode an image with no frames",
             ))

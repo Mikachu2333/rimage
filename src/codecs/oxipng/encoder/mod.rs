@@ -65,7 +65,7 @@ impl EncoderTrait for OxiPngEncoder {
         }
         .into_iter()
         .next()
-        .ok_or_else(|| {
+        .ok_or({
             ImageErrors::EncodeErrors(ImgEncodeErrors::GenericStatic(
                 "Cannot encode an image with no frames",
             ))

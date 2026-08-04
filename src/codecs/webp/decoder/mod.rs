@@ -44,8 +44,7 @@ where
         let fallback_duration = timestamps
             .windows(2)
             .filter_map(|pair| pair[1].checked_sub(pair[0]))
-            .filter(|duration| *duration > 0)
-            .next_back()
+            .rfind(|duration| *duration > 0)
             .unwrap_or(100);
 
         let frames = decoded_frames
