@@ -4,7 +4,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -66,6 +66,50 @@ impl ProcessingState {
             results: vec![],
             metadata: None,
         }
+    }
+}
+
+/// Limits concurrent image processing to prevent OOM with large images.
+///
+/// A `Mutex<isize>` + `Condvar` permit counter. Each worker task calls
+/// [`acquire`](ConcurrencyLimiter::acquire) at the start of its work; if the
+/// counter is at 0 the call blocks. When the returned [`PermitGuard`] is
+/// dropped, the permit is returned and a blocked waiter is woken.
+#[derive(Clone)]
+struct ConcurrencyLimiter {
+    inner: Arc<(Mutex<isize>, Condvar)>,
+}
+
+impl ConcurrencyLimiter {
+    fn new(max: usize) -> Self {
+        Self {
+            inner: Arc::new((Mutex::new(max as isize), Condvar::new())),
+        }
+    }
+
+    fn acquire(&self) -> PermitGuard {
+        let (ref lock, ref cvar) = *self.inner;
+        let mut count = lock.lock().unwrap();
+        while *count <= 0 {
+            count = cvar.wait(count).unwrap();
+        }
+        *count -= 1;
+        PermitGuard {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+struct PermitGuard {
+    inner: Arc<(Mutex<isize>, Condvar)>,
+}
+
+impl Drop for PermitGuard {
+    fn drop(&mut self) {
+        let (ref lock, ref cvar) = *self.inner;
+        let mut count = lock.lock().unwrap();
+        *count += 1;
+        cvar.notify_one();
     }
 }
 
@@ -582,10 +626,11 @@ fn main() {
                 }
             }
 
+            let limiter = ConcurrencyLimiter::new(threads);
             thread_pool.install(|| {
-                for batch in paths.chunks(threads) {
-                    rayon::scope(|s| {
-                        for (input, output) in batch.iter().cloned() {
+                rayon::scope(|s| {
+                    for (input, output) in paths {
+                    let limiter = limiter.clone();
                     let pb_main = pb_main.clone();
                     let multi = multi.clone();
                     let sty_aux_decode = sty_aux_decode.clone();
@@ -594,6 +639,12 @@ fn main() {
                     let state = Arc::clone(&state);
                     let current_dir = current_dir.clone();
                     s.spawn(move |_| {
+                        // Acquire the permit on the worker itself: rayon schedules the
+                        // scope closure onto a pool worker, so blocking the caller would
+                        // starve the already-spawned tasks in a single-threaded pool
+                        // (deadlock). Acquiring before adding the progress bar also keeps
+                        // the number of on-screen spinners bounded by `threads`.
+                        let _permit = limiter.acquire();
                         let image_start_time = std::time::Instant::now();
 
                         let pb = multi.add(ProgressBar::new_spinner());
@@ -778,10 +829,9 @@ fn main() {
                             input_modified,
                             output_created,
                         });
-                            });
-                        }
                     });
                 }
+            });
             });
 
             let mut state = state.lock().unwrap();
