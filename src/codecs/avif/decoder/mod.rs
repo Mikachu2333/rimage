@@ -5,7 +5,6 @@ use zune_image::{errors::ImageErrors, image::Image, traits::DecoderTrait};
 
 /// A AVIF decoder
 pub struct AvifDecoder<R: Read> {
-    #[cfg_attr(windows, allow(dead_code))]
     inner: Vec<u8>,
     dimensions: Option<(usize, usize)>,
     phantom: PhantomData<R>,
@@ -30,23 +29,13 @@ where
     R: Read,
 {
     fn decode(&mut self) -> Result<Image, ImageErrors> {
-        #[cfg(windows)]
-        return Err(ImageErrors::ImageDecodeErrors(
-            "AVIF decoding is disabled on Windows because the current libavif backend can cause an access violation"
-                .to_string(),
-        ));
-
-        #[cfg(not(windows))]
         let img = libavif::decode_rgb(&self.inner)
             .map_err(|e| ImageErrors::ImageDecodeErrors(e.to_string()))?;
 
-        #[cfg(not(windows))]
-        {
-            let (w, h) = (img.width() as usize, img.height() as usize);
-            self.dimensions = Some((w, h));
+        let (w, h) = (img.width() as usize, img.height() as usize);
+        self.dimensions = Some((w, h));
 
-            Ok(Image::from_u8(&img, w, h, ColorSpace::RGBA))
-        }
+        Ok(Image::from_u8(&img, w, h, ColorSpace::RGBA))
     }
 
     fn dimensions(&self) -> Option<(usize, usize)> {
