@@ -121,6 +121,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # The GH Actions macOS image pre-taps aws/tap (and azure/bicep);
+          # Homebrew >= 6 requires tap trust and warns on every brew call.
+          # Nothing in this build uses these taps, so untap them first.
+          brew untap aws/tap 2>/dev/null || true
+          brew untap azure/bicep 2>/dev/null || true
           brew install ninja meson nasm yasm || brew upgrade ninja meson nasm yasm
 
       - name: install Windows dependencies
