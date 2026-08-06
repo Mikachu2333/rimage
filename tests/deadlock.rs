@@ -129,6 +129,39 @@ fn backup_path_collision_does_not_destroy_original() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A case-variant of `@backup` (e.g. `-b -s @Backup`) maps the output to
+/// `img@Backup.png`, which is the same file as the backup `img@backup.png` on
+/// a case-insensitive filesystem. Path comparisons treat names as
+/// case-insensitive on every platform, so this must fail instead of
+/// publishing over the backup.
+#[test]
+fn backup_case_variant_collision_does_not_destroy_original() {
+    let exe = env!("CARGO_BIN_EXE_rimage");
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    let dir = format!("{manifest}/target/tmp-backup-case-collision");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let input = format!("{dir}/img.png");
+    std::fs::copy(format!("{manifest}/tests/files/png/f1t.png"), &input).unwrap();
+    let original = std::fs::read(&input).unwrap();
+
+    let status = Command::new(exe)
+        .args(["png", &input, "-b", "-s", "@Backup", "-t", "2", "--quiet"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+
+    assert!(
+        !status.success(),
+        "case-variant colliding -b/-s must not report success"
+    );
+    assert_eq!(std::fs::read(&input).unwrap(), original);
+    assert!(!std::path::Path::new(&format!("{dir}/img@backup.png")).exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A `--backup` destination left by an earlier run must never be overwritten
 /// or deleted: it holds the preserved original image.
 #[test]
@@ -154,7 +187,10 @@ fn existing_backup_is_never_overwritten() {
         .status()
         .unwrap();
 
-    assert!(!status.success(), "an existing backup must not report success");
+    assert!(
+        !status.success(),
+        "an existing backup must not report success"
+    );
     assert_eq!(
         std::fs::read(&input).unwrap(),
         original_input,
