@@ -45,25 +45,24 @@ fn common_path_is_none_for_unrelated_windows_drives() {
     assert_eq!(get_common_path(&paths), None);
 }
 
-#[cfg(windows)]
 #[test]
-fn common_path_and_strip_prefix_ignore_ascii_case_on_windows() {
-    let paths = vec![PathBuf::from(r"C:\Photos\a"), PathBuf::from(r"c:\photos\b")];
+fn common_path_and_strip_prefix_ignore_ascii_case_on_all_platforms() {
+    let paths = vec![PathBuf::from("/Photos/a"), PathBuf::from("/photos/b")];
     let common = get_common_path(&paths).unwrap();
-    assert_eq!(common, PathBuf::from(r"C:\Photos"));
+    assert_eq!(common, PathBuf::from("/Photos"));
     assert_eq!(
-        strip_prefix_components(Path::new(r"c:\photos\b"), &common),
+        strip_prefix_components(Path::new("/photos/b"), &common),
         Some(PathBuf::from("b"))
     );
 }
 
-#[cfg(any(windows, target_os = "macos"))]
 #[test]
-fn paths_equivalent_ignores_ascii_case_on_case_insensitive_filesystems() {
+fn paths_equivalent_ignores_ascii_case_on_all_platforms() {
     // Regression: a same-format conversion with `--backup` and a suffix such
     // as `@Backup` maps the output to `img@Backup.png` while the backup is
-    // `img@backup.png`. On a case-insensitive filesystem those are the same
-    // file, so the collision must be detected before publishing over it.
+    // `img@backup.png`. Path comparisons treat names as case-insensitive on
+    // every platform (fail-safe), so the collision must be detected before
+    // publishing over the backup.
     assert!(paths_equivalent(
         Path::new("/img@Backup.png"),
         Path::new("/img@backup.png")
