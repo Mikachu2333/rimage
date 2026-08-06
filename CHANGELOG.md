@@ -2,6 +2,50 @@
 
 All notable changes to the Rimage library will be documented in this file.
 
+# 0.13.0
+
+### Breaking Changes
+
+- append the output suffix directly WITHOUT an automatic `@` separator (`-s 2x` now yields `file2x.jpeg`) and update the CLI help accordingly
+
+### Features
+
+- expand glob patterns in input paths on all platforms (previously Windows-only), preferring existing literal paths
+
+### Bug Fixes
+
+- fix a deadlock with a single-threaded pool by acquiring the concurrency permit inside the worker, and return an error instead of panicking when the thread pool cannot be created
+- write outputs atomically through unique temporary files and publish them by rename, with a recoverable swap when replacing existing files on Windows
+- detect collisions before any processing: duplicate output mappings, outputs overwriting another input, metadata path conflicts, and output paths identical to `--backup` paths (path names are treated as case-insensitive on every platform as a fail-safe default, covering case-insensitive Linux mounts, and aliases are resolved through canonicalization for existing paths)
+- never overwrite or delete an existing `--backup` file; create backups via hard link with a no-clobber copy fallback and remove the original input only after a successful publish
+- normalize input paths without canonicalization so symlinked directory layouts are preserved, and reject output parents that resolve outside the output root
+- return non-zero exit codes when no inputs are found, an encoder fails, a collision is detected, files fail, or metadata cannot be written
+- fix WebP animation encoding by warning and encoding only the first frame; compute per-frame durations from timestamps in the decoder
+- guard against empty frame lists in the AVIF, MozJPEG, OxiPNG and WebP encoders instead of panicking
+- restrict MozJPEG to 8-bit output and fix OxiPNG 16-bit endianness for non-RGB colorspaces
+- apply ICC profiles to 16-bit frames without panicking and preserve frame timing metadata
+- prevent integer overflow panics in quantization and resize, and surface resize worker panics as errors
+
+### Improvements
+
+- validate suffixes and output file names (including Windows reserved names) up front, reject recursive inputs without a common root and duplicate output mappings with clear errors
+- write JSON metadata atomically and use saturating arithmetic for size and space-saved statistics
+- add end-to-end regression tests covering single-thread processing, recursive output layouts, backup collisions, existing-backup protection and non-zero exit codes
+- regenerate the AVIF test fixture
+
+### Dependencies
+
+- bump `zune-imageprocs` to 0.5.1 (stable) and `regex` to 1.13
+- bump `jxl-grid` to 0.6.2, `jxl-oxide` to 0.12.6, `log` to 0.4.33, `indicatif` to 0.18.6, `anyhow` to 1.0.103 and `serde_json` to 1.0.150
+- replace `winres` with `winresource` 0.1.31 and make `glob` a general dependency
+- pin `ravif` 0.13.0 without default features for `aarch64-unknown-linux-musl`
+
+### Build / CI
+
+- rewrite the CI workflow: build and test on `main` and `dev`, Ubuntu 24.04 / Windows 2025 / macOS 15 runners, cross builds for `aarch64-unknown-linux-musl` with a pinned image, qemu runner for aarch64 Linux, `actions/checkout@v7`, concurrency grouping and read-only permissions
+- use yasm for the libaom build, fix artifact download errors and silence Homebrew tap warnings on macOS
+- remove the `config.toml` pre-release override and set the Windows pre-release version in `build.rs`
+
 # [0.12.4](https://github.com/SalOne22/rimage/compare/v0.12.3...v0.12.4) (2026-05-23)
 
 ### Features
