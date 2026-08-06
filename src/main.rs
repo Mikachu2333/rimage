@@ -246,7 +246,10 @@ fn append_output_extension(path: &mut PathBuf, extension: &str) {
 
 fn output_path_key(path: &Path) -> String {
     let key = path.to_string_lossy().into_owned();
-    if cfg!(windows) {
+    // Windows and macOS default to case-insensitive filesystems; fold case in
+    // keys so collisions between e.g. `img@Backup.png` and `img@backup.png`
+    // are detected before publishing over the backup.
+    if cfg!(any(windows, target_os = "macos")) {
         key.to_lowercase()
     } else {
         key
@@ -1035,5 +1038,16 @@ mod tests {
         let result = join_normalized(&base, rel);
         let expected = base.join("subdir").join("1.jpg");
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn output_path_key_folds_case_on_case_insensitive_filesystems() {
+        let upper = output_path_key(Path::new("/Img@Backup.PNG"));
+        let lower = output_path_key(Path::new("/img@backup.png"));
+        if cfg!(any(windows, target_os = "macos")) {
+            assert_eq!(upper, lower);
+        } else {
+            assert_ne!(upper, lower);
+        }
     }
 }

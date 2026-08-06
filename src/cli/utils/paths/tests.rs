@@ -57,6 +57,43 @@ fn common_path_and_strip_prefix_ignore_ascii_case_on_windows() {
     );
 }
 
+#[cfg(any(windows, target_os = "macos"))]
+#[test]
+fn paths_equivalent_ignores_ascii_case_on_case_insensitive_filesystems() {
+    // Regression: a same-format conversion with `--backup` and a suffix such
+    // as `@Backup` maps the output to `img@Backup.png` while the backup is
+    // `img@backup.png`. On a case-insensitive filesystem those are the same
+    // file, so the collision must be detected before publishing over it.
+    assert!(paths_equivalent(
+        Path::new("/img@Backup.png"),
+        Path::new("/img@backup.png")
+    ));
+    assert!(paths_equivalent(
+        Path::new("/photos/a/B.JPG"),
+        Path::new("/PHOTOS/A/b.jpg")
+    ));
+    assert!(!paths_equivalent(Path::new("/a.png"), Path::new("/b.png")));
+}
+
+#[cfg(unix)]
+#[test]
+fn paths_equivalent_resolves_symlink_aliases() {
+    use std::os::unix::fs::symlink;
+
+    let root = unique_test_dir("path-equiv-symlink");
+    fs::create_dir_all(&root).unwrap();
+    let real = root.join("real");
+    fs::create_dir_all(&real).unwrap();
+    let file = real.join("a.png");
+    fs::write(&file, b"x").unwrap();
+    let link = root.join("link");
+    symlink(&real, &link).unwrap();
+
+    assert!(paths_equivalent(&link.join("a.png"), &file));
+    assert!(!paths_equivalent(&link.join("b.png"), &file));
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn recursive_single_file_stays_under_output_directory() {
     let root = unique_test_dir("recursive-single");
