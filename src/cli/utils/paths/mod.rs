@@ -128,7 +128,6 @@ fn valid_suffix(suffix: &str) -> bool {
 
 fn file_name_with_suffix(file_name: &OsStr, suffix: &str) -> OsString {
     let mut name = file_name.to_os_string();
-    name.push("@");
     name.push(suffix);
     name
 }
