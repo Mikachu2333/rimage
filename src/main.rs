@@ -1,5 +1,6 @@
 use std::{
     collections::HashSet,
+    ffi::OsStr,
     fs::{self, File},
     io::Write,
     path::{Path, PathBuf},
@@ -252,20 +253,6 @@ fn output_path_key(path: &Path) -> String {
     }
 }
 
-fn valid_suffix(suffix: &str) -> bool {
-    !suffix.is_empty()
-        && suffix != "."
-        && suffix != ".."
-        && !suffix.ends_with(['.', ' '])
-        && !suffix.chars().any(|character| {
-            character.is_control()
-                || matches!(
-                    character,
-                    '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
-                )
-        })
-}
-
 fn size_ratio(output_size: u64, input_size: u64) -> f64 {
     if input_size == 0 {
         0.0
@@ -491,7 +478,32 @@ fn expand_tilde_in_path(path: &Path) -> PathBuf {
     }
 }
 
-fn main() {
+/// Creates the target directory and verifies that existing symlinks/reparse
+/// points have not redirected it outside the requested output root.
+fn prepare_output_parent(output: &Path, output_root: Option<&Path>) -> std::io::Result<()> {
+    let parent = output.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let Some(root) = output_root else {
+        return Ok(());
+    };
+
+    fs::create_dir_all(root)?;
+    let canonical_root = root.canonicalize()?;
+    let canonical_parent = parent.canonicalize()?;
+    if !canonical_parent.starts_with(&canonical_root) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "output directory {} resolves outside {}",
+                parent.display(),
+                root.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn main() -> std::process::ExitCode {
     let logger = pretty_env_logger::formatted_builder()
         .parse_default_env()
         .filter_module("little_exif", log::LevelFilter::Off)
@@ -521,32 +533,32 @@ fn main() {
                 Ok(pool) => pool,
                 Err(error) => {
                     log::error!("Failed to create image worker pool: {error}");
-                    return;
+                    return std::process::ExitCode::FAILURE;
                 }
             };
 
-            // Normalize file paths: resolve ~, relative paths, canonicalize
+            // Keep normalized absolute paths but do not canonicalize existing
+            // inputs here: validation follows symlinks while preserving their
+            // user-visible path and recursive directory layout.
             let files: Vec<PathBuf> = matches
                 .get_many::<PathBuf>("files")
                 .expect("`files` is required")
-                .map(|p| normalize_path(p, &current_dir))
+                .map(|path| {
+                    let expanded = expand_tilde_in_path(path);
+                    if expanded.is_absolute() {
+                        join_normalized(Path::new(""), &expanded)
+                    } else {
+                        join_normalized(&current_dir, &expanded)
+                    }
+                })
                 .collect();
             let files = collect_files(&files);
             log::debug!("Resolved files: {files:#?}");
 
-            let file_count = files.iter().filter(|f| f.is_file()).count() as u64;
-
-            if file_count == 0 {
-                log::error!("No input files found. Check the file paths.");
-                if log::log_enabled!(log::Level::Debug) {
-                    log::debug!("Resolved files: {files:#?}");
-                }
-                return;
-            }
-
             let out_dir = matches
                 .get_one::<PathBuf>("directory")
                 .map(|p| normalize_path(p, &current_dir));
+            let output_root = out_dir.clone();
 
             let recursive = matches.get_flag("recursive");
             let backup = matches.get_flag("backup");
@@ -560,37 +572,42 @@ fn main() {
                 .unwrap_or(PathBuf::from("metadata.json"));
 
             let suffix = matches.get_one::<String>("suffix").cloned();
-            if suffix
-                .as_deref()
-                .is_some_and(|suffix| !valid_suffix(suffix))
-            {
-                log::error!("Suffix must be a valid single filename component");
-                return;
-            }
 
             if quiet || no_progress {
                 multi.set_draw_target(ProgressDrawTarget::hidden());
-            }
-
-            let pb_main = multi.add(ProgressBar::new(file_count));
-            pb_main.set_style(sty_main);
-            if file_count <= 1 {
-                pb_main.set_draw_target(ProgressDrawTarget::hidden());
             }
 
             let output_extension = match encoder(subcommand, matches) {
                 Ok(encoder) => encoder.to_extension(),
                 Err(error) => {
                     log::error!("Failed to initialize encoder: {error}");
-                    return;
+                    return std::process::ExitCode::FAILURE;
                 }
             };
-            let paths = get_paths(files, out_dir, suffix, recursive)
-                .map(|(input, mut output)| {
-                    append_output_extension(&mut output, output_extension);
-                    (input, output)
-                })
-                .collect::<Vec<_>>();
+            let paths = match get_paths(files, out_dir, suffix, recursive) {
+                Ok(paths) if !paths.is_empty() => paths
+                    .into_iter()
+                    .map(|(input, mut output)| {
+                        append_output_extension(&mut output, output_extension);
+                        (input, output)
+                    })
+                    .collect::<Vec<_>>(),
+                Ok(_) => {
+                    log::error!("No input files found. Check the file paths.");
+                    return std::process::ExitCode::FAILURE;
+                }
+                Err(error) => {
+                    log::error!("{error}");
+                    return std::process::ExitCode::FAILURE;
+                }
+            };
+            let file_count = paths.len() as u64;
+
+            let pb_main = multi.add(ProgressBar::new(file_count));
+            pb_main.set_style(sty_main);
+            if file_count <= 1 {
+                pb_main.set_draw_target(ProgressDrawTarget::hidden());
+            }
 
             let input_paths = paths
                 .iter()
@@ -605,14 +622,14 @@ fn main() {
                         "Multiple input files resolve to the same output path: {}",
                         output.display()
                     );
-                    return;
+                    return std::process::ExitCode::FAILURE;
                 }
                 if input_key != output_key && input_paths.contains(&output_key) {
                     log::error!(
                         "Output path would overwrite another input file: {}",
                         output.display()
                     );
-                    return;
+                    return std::process::ExitCode::FAILURE;
                 }
             }
             if output_metadata {
@@ -622,7 +639,7 @@ fn main() {
                         "Metadata path conflicts with an input or output image: {}",
                         metadata_path.display()
                     );
-                    return;
+                    return std::process::ExitCode::FAILURE;
                 }
             }
 
@@ -638,6 +655,7 @@ fn main() {
                     let sty_aux_encode = sty_aux_encode.clone();
                     let state = Arc::clone(&state);
                     let current_dir = current_dir.clone();
+                    let output_root = output_root.clone();
                     s.spawn(move |_| {
                         // Acquire the permit on the worker itself: rayon schedules the
                         // scope closure onto a pool worker, so blocking the caller would
@@ -717,9 +735,10 @@ fn main() {
 
                         pb.set_style(sty_aux_encode.clone());
 
-                        if let Some(parent) = output.parent() {
-                            handle_error!(output, fs::create_dir_all(parent));
-                        }
+                        handle_error!(
+                            output,
+                            prepare_output_parent(&output, output_root.as_deref())
+                        );
                         let (temporary, output_file) =
                             handle_error!(output, TemporaryOutput::new(&output));
 
@@ -733,14 +752,13 @@ fn main() {
                         }
 
                         if backup {
-                            let backup_name = format!(
-                                "{}@backup.{}",
-                                input
-                                    .file_stem()
-                                    .and_then(|s| s.to_str())
-                                    .unwrap_or("backup"),
-                                input.extension().and_then(|s| s.to_str()).unwrap_or("bak"),
-                            );
+                            let mut backup_name = input
+                                .file_stem()
+                                .unwrap_or_else(|| OsStr::new("backup"))
+                                .to_os_string();
+                            backup_name.push("@backup.");
+                            backup_name
+                                .push(input.extension().unwrap_or_else(|| OsStr::new("bak")));
                             let backup_path = input.with_file_name(&backup_name);
                             if let Err(hard_link_error) = fs::hard_link(&input, &backup_path) {
                                 log::debug!(
@@ -779,7 +797,7 @@ fn main() {
                         let processed_at = get_current_timestamp();
                         let output_created = get_current_timestamp();
 
-                        let mut state = state.lock().unwrap();
+                        let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
 
                         let absolute_input_path = normalize_path(&input, &current_dir);
                         let absolute_output_path = normalize_path(&output, &current_dir);
@@ -834,7 +852,7 @@ fn main() {
             });
             });
 
-            let mut state = state.lock().unwrap();
+            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
 
             // Update final metadata calculations
             if let Some(ref mut meta) = state.metadata.as_mut() {
@@ -860,17 +878,16 @@ fn main() {
                 let term = Term::stdout();
 
                 if state.results.len() > 1 {
-                    term.write_line(&format!(
+                    let _ = term.write_line(&format!(
                         "{:<path_width$} {}",
                         style("File").bold(),
                         style("Size").bold(),
-                    ))
-                    .unwrap();
+                    ));
 
                     for result in state.results.iter() {
                         let difference = size_ratio(result.output_size, result.input_size) * 100.0;
 
-                        term.write_line(&format!(
+                        let _ = term.write_line(&format!(
                             "{:<path_width$} {} > {} {}",
                             result.output.display(),
                             style(DecimalBytes(result.input_size)).blue(),
@@ -880,8 +897,7 @@ fn main() {
                             } else {
                                 style(format!("{:.2}%", difference - 100.0)).green()
                             },
-                        ))
-                        .unwrap();
+                        ));
                     }
                 }
 
@@ -923,6 +939,7 @@ fn main() {
                     file_count,
                     rust_log_hint
                 );
+                return std::process::ExitCode::FAILURE;
             }
 
             if output_metadata && let Some(metadata) = state.metadata.as_ref() {
@@ -937,7 +954,7 @@ fn main() {
                                 "Failed to create metadata directory {}: {error}",
                                 parent.display()
                             );
-                            return;
+                            return std::process::ExitCode::FAILURE;
                         }
                         match TemporaryOutput::new(&metadata_path) {
                             Ok((temporary, mut file)) => {
@@ -950,20 +967,28 @@ fn main() {
                                         "Failed to write metadata {}: {error}",
                                         metadata_path.display()
                                     );
+                                    return std::process::ExitCode::FAILURE;
                                 }
                             }
-                            Err(error) => log::error!(
-                                "Failed to create metadata output {}: {error}",
-                                metadata_path.display()
-                            ),
+                            Err(error) => {
+                                log::error!(
+                                    "Failed to create metadata output {}: {error}",
+                                    metadata_path.display()
+                                );
+                                return std::process::ExitCode::FAILURE;
+                            }
                         }
                     }
-                    Err(error) => log::error!("Failed to serialize metadata: {error}"),
+                    Err(error) => {
+                        log::error!("Failed to serialize metadata: {error}");
+                        return std::process::ExitCode::FAILURE;
+                    }
                 }
             }
         }
         None => unreachable!("clap ensures a subcommand is always provided"),
     }
+    std::process::ExitCode::SUCCESS
 }
 
 #[cfg(test)]
