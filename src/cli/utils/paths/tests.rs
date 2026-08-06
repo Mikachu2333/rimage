@@ -20,27 +20,41 @@ fn find_common_path() {
         PathBuf::from("/path/to/image2.jpg"),
         PathBuf::from("/path/to/image3.jpg"),
     ];
-
-    let common_path = get_common_path(&paths);
-    assert_eq!(common_path, Some(PathBuf::from("/path/to")));
-
-    let paths = vec![
-        PathBuf::from("/path/to/test/image1.jpg"),
-        PathBuf::from("/path/to/image2.jpg"),
-        PathBuf::from("/path/to/image3.jpg"),
-    ];
-
-    let common_path = get_common_path(&paths);
-    assert_eq!(common_path, Some(PathBuf::from("/path/to")));
+    assert_eq!(get_common_path(&paths), Some(PathBuf::from("/path/to")));
 
     let paths = vec![
         PathBuf::from("/path/to/test/image1.jpg"),
         PathBuf::from("/path/image2.jpg"),
         PathBuf::from("/path/to/image3.jpg"),
     ];
+    assert_eq!(get_common_path(&paths), Some(PathBuf::from("/path")));
+}
 
-    let common_path = get_common_path(&paths);
-    assert_eq!(common_path, Some(PathBuf::from("/path")));
+#[test]
+fn common_path_is_none_for_empty_input() {
+    assert_eq!(get_common_path(&[]), None);
+}
+
+#[cfg(windows)]
+#[test]
+fn common_path_is_none_for_unrelated_windows_drives() {
+    let paths = vec![
+        PathBuf::from(r"C:\projects\a\image1.jpg"),
+        PathBuf::from(r"D:\projects\a\image2.jpg"),
+    ];
+    assert_eq!(get_common_path(&paths), None);
+}
+
+#[cfg(windows)]
+#[test]
+fn common_path_and_strip_prefix_ignore_ascii_case_on_windows() {
+    let paths = vec![PathBuf::from(r"C:\Photos\a"), PathBuf::from(r"c:\photos\b")];
+    let common = get_common_path(&paths).unwrap();
+    assert_eq!(common, PathBuf::from(r"C:\Photos"));
+    assert_eq!(
+        strip_prefix_components(Path::new(r"c:\photos\b"), &common),
+        Some(PathBuf::from("b"))
+    );
 }
 
 #[test]
@@ -52,14 +66,9 @@ fn recursive_single_file_stays_under_output_directory() {
     let input = input_dir.join("image.jpg");
     fs::write(&input, b"test").unwrap();
 
-    let paths =
-        get_paths(vec![input.clone()], Some(output_root.clone()), None, true).collect::<Vec<_>>();
+    let paths = get_paths(vec![input.clone()], Some(output_root.clone()), None, true).unwrap();
 
-    assert_eq!(
-        paths,
-        vec![(input, output_root.join("image"))],
-        "an absolute input path must not replace the selected output directory"
-    );
+    assert_eq!(paths, vec![(input, output_root.join("image"))]);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -75,10 +84,91 @@ fn recursive_files_preserve_relative_parent_structure() {
     fs::write(&first, b"first").unwrap();
     fs::write(&second, b"second").unwrap();
 
-    let paths =
-        get_paths(vec![first, second], Some(output_root.clone()), None, true).collect::<Vec<_>>();
+    let paths = get_paths(vec![first, second], Some(output_root.clone()), None, true).unwrap();
 
     assert_eq!(paths[0].1, output_root.join("a/image"));
     assert_eq!(paths[1].1, output_root.join("b/image"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn duplicate_outputs_are_rejected() {
+    let root = unique_test_dir("duplicate-output");
+    fs::create_dir_all(root.join("a")).unwrap();
+    fs::create_dir_all(root.join("b")).unwrap();
+    let first = root.join("a/image.jpg");
+    let second = root.join("b/image.png");
+    fs::write(&first, b"first").unwrap();
+    fs::write(&second, b"second").unwrap();
+
+    let error = get_paths(vec![first, second], Some(root.join("out")), None, false).unwrap_err();
+    assert!(error.contains("same output path"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn invalid_suffixes_are_rejected() {
+    for bad in [
+        "",
+        "..\\evil",
+        "a/b",
+        "..",
+        ".",
+        "a\\b",
+        "out:2x",
+        "na*me",
+        "bad\u{1f}",
+        "tail.",
+        "tail ",
+    ] {
+        assert!(!valid_suffix(bad), "suffix {bad:?} must be rejected");
+    }
+    for ok in ["2x", "updated", "v2.1", "a..b"] {
+        assert!(valid_suffix(ok), "suffix {ok:?} must be accepted");
+    }
+}
+
+#[test]
+fn normalize_lexically_removes_dot_components() {
+    assert_eq!(
+        normalize_lexically(Path::new("/a/./b/../c")),
+        PathBuf::from("/a/c")
+    );
+    assert_eq!(normalize_lexically(Path::new("a/../b")), PathBuf::from("b"));
+}
+
+#[test]
+fn collect_files_expands_globs_but_prefers_existing_literals() {
+    let root = unique_test_dir("glob");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("a.jpg"), b"x").unwrap();
+    fs::write(root.join("b.jpg"), b"x").unwrap();
+    fs::write(root.join("photo[1].jpg"), b"literal").unwrap();
+    fs::write(root.join("photo1.jpg"), b"pattern match").unwrap();
+
+    let pattern = root.join("*.jpg");
+    let mut files = collect_files(std::slice::from_ref(&pattern));
+    files.sort();
+    assert_eq!(files.len(), 4);
+
+    let literal = root.join("photo[1].jpg");
+    assert_eq!(collect_files(std::slice::from_ref(&literal)), vec![literal]);
+    assert!(collect_files(&[root.join("nomatch_*.jpg")]).is_empty());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn file_symlinks_are_accepted() {
+    use std::os::unix::fs::symlink;
+
+    let root = unique_test_dir("symlink");
+    fs::create_dir_all(&root).unwrap();
+    let target = root.join("target.jpg");
+    let link = root.join("link.jpg");
+    fs::write(&target, b"x").unwrap();
+    symlink(&target, &link).unwrap();
+
+    assert!(check_input_file(&link).is_ok());
     fs::remove_dir_all(root).unwrap();
 }
