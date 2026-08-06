@@ -14,7 +14,7 @@ use std::{
 use cli::{
     cli,
     pipeline::{decode, operations},
-    utils::paths::{collect_files, get_paths},
+    utils::paths::{collect_files, get_paths, paths_equivalent},
 };
 use console::{Term, style};
 use indicatif::{DecimalBytes, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
@@ -506,6 +506,62 @@ fn prepare_output_parent(output: &Path, output_root: Option<&Path>) -> std::io::
     Ok(())
 }
 
+/// Computes the `--backup` destination for an input file: `<stem>@backup.<ext>`
+/// next to the input.
+fn compute_backup_path(input: &Path) -> PathBuf {
+    let mut backup_name = input
+        .file_stem()
+        .unwrap_or_else(|| OsStr::new("backup"))
+        .to_os_string();
+    backup_name.push("@backup.");
+    backup_name.push(input.extension().unwrap_or_else(|| OsStr::new("bak")));
+    input.with_file_name(&backup_name)
+}
+
+/// Creates a backup of `input` at `backup_path` without overwriting an
+/// existing destination. Prefers a hard link; falls back to copying the bytes
+/// for filesystems without hard link support. `fs::copy` is deliberately not
+/// used because it truncates an existing destination, which could destroy the
+/// original image preserved by an earlier run.
+fn create_backup(input: &Path, backup_path: &Path) -> std::io::Result<()> {
+    match fs::hard_link(input, backup_path) {
+        Ok(()) => return Ok(()),
+        Err(error) => {
+            log::debug!(
+                "{}: hard link backup failed, falling back to copy: {error}",
+                input.display()
+            );
+        }
+    }
+
+    let mut source = fs::File::open(input)?;
+    let mut destination = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(backup_path)?;
+    std::io::copy(&mut source, &mut destination)?;
+    destination.flush()?;
+    Ok(())
+}
+
+/// Strips the Windows verbatim (`\\?\`) prefix from a canonicalized path for
+/// display and metadata purposes. `\\?\UNC\server\share` is restored to the
+/// regular UNC form. Non-Windows paths are returned unchanged.
+fn pretty_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(s) = path.to_str() {
+            if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+                return PathBuf::from(format!(r"\\{rest}"));
+            }
+            if let Some(rest) = s.strip_prefix(r"\\?\") {
+                return PathBuf::from(rest);
+            }
+        }
+    }
+    path.to_path_buf()
+}
+
 fn main() -> std::process::ExitCode {
     let logger = pretty_env_logger::formatted_builder()
         .parse_default_env()
@@ -680,6 +736,51 @@ fn main() -> std::process::ExitCode {
                             pb_main: pb_main.clone(),
                         };
 
+                        // A same-format, in-place conversion can produce an
+                        // output path identical to the --backup path (e.g.
+                        // `-b -s @backup` on `img.png`). Publishing the temp
+                        // output would then overwrite the backup holding the
+                        // original image, silently destroying it. Detect the
+                        // collision before any decoding or rename happens.
+                        let backup_path = backup.then(|| compute_backup_path(&input));
+                        if let Some(backup_path) = &backup_path
+                            && paths_equivalent(&output, backup_path)
+                        {
+                            log::error!(
+                                "{}: output path {} is the same as the --backup path {}; \
+                                 use a different --suffix or drop --backup",
+                                input.display(),
+                                output.display(),
+                                backup_path.display()
+                            );
+                            return;
+                        }
+                        // A backup left by an earlier run preserves the
+                        // original image; refuse to overwrite or delete it.
+                        // Fail fast instead of encoding the image first.
+                        if let Some(backup_path) = &backup_path {
+                            match fs::symlink_metadata(backup_path) {
+                                Ok(_) => {
+                                    log::error!(
+                                        "{}: --backup destination already exists: {}; \
+                                         refusing to overwrite it",
+                                        input.display(),
+                                        backup_path.display()
+                                    );
+                                    return;
+                                }
+                                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                                Err(error) => {
+                                    log::error!(
+                                        "{}: cannot inspect --backup destination {}: {error}",
+                                        input.display(),
+                                        backup_path.display()
+                                    );
+                                    return;
+                                }
+                            }
+                        }
+
                         let mut ops: Vec<Box<dyn OperationsTrait>> = Vec::new();
 
                         let input_size = handle_error!(input, input.metadata()).len();
@@ -754,24 +855,13 @@ fn main() -> std::process::ExitCode {
                             );
                         }
 
-                        if backup {
-                            let mut backup_name = input
-                                .file_stem()
-                                .unwrap_or_else(|| OsStr::new("backup"))
-                                .to_os_string();
-                            backup_name.push("@backup.");
-                            backup_name
-                                .push(input.extension().unwrap_or_else(|| OsStr::new("bak")));
-                            let backup_path = input.with_file_name(&backup_name);
-                            if let Err(hard_link_error) = fs::hard_link(&input, &backup_path) {
-                                log::debug!(
-                                    "{}: hard link backup failed, falling back to copy: {hard_link_error}",
-                                    input.display()
-                                );
-                                handle_error!(input, fs::copy(&input, &backup_path));
+                        if let Some(backup_path) = backup_path.as_deref() {
+                            if let Err(error) = create_backup(&input, backup_path) {
+                                log::error!("{}: {error}", input.display());
+                                return;
                             }
                             if let Err(error) = temporary.publish(&output) {
-                                if let Err(cleanup_error) = fs::remove_file(&backup_path) {
+                                if let Err(cleanup_error) = fs::remove_file(backup_path) {
                                     log::error!(
                                         "{}: publish failed ({error}); removing the new backup also failed: {cleanup_error}",
                                         output.display()
@@ -802,8 +892,9 @@ fn main() -> std::process::ExitCode {
 
                         let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
 
-                        let absolute_input_path = normalize_path(&input, &current_dir);
-                        let absolute_output_path = normalize_path(&output, &current_dir);
+                        let absolute_input_path = pretty_path(&normalize_path(&input, &current_dir));
+                        let absolute_output_path =
+                            pretty_path(&normalize_path(&output, &current_dir));
 
                         state.results.push(Result {
                             output: output.to_path_buf(),
