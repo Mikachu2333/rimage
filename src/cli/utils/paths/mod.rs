@@ -210,12 +210,18 @@ fn strip_prefix_components(path: &Path, base: &Path) -> Option<PathBuf> {
     )
 }
 
+/// Compares two path components, treating names as case-insensitive on every
+/// platform.
+///
+/// This is a deliberate fail-safe default. Case-insensitive filesystems
+/// (Windows, macOS, and case-insensitive Linux mounts such as SMB/NAS) can
+/// hold `img@Backup.png` and `img@backup.png` as the same file. Treating them
+/// as equivalent even on genuinely case-sensitive filesystems only makes
+/// collision checks stricter; missing the equivalence could let a publish
+/// overwrite the `--backup` copy holding the original image.
 fn component_eq(a: &OsStr, b: &OsStr) -> bool {
     if a == b {
         return true;
-    }
-    if !default_fs_is_case_insensitive() {
-        return false;
     }
     match (a.to_str(), b.to_str()) {
         // Use Unicode-aware folding where possible; APFS folds more than ASCII.
@@ -224,22 +230,13 @@ fn component_eq(a: &OsStr, b: &OsStr) -> bool {
     }
 }
 
-/// Windows and macOS default to case-insensitive filesystems (APFS/HFS+ on
-/// macOS unless created case-sensitive). Path comparisons must follow the
-/// filesystem's case semantics, or a same-format conversion such as
-/// `--backup --suffix @Backup` could publish over the case-differing backup
-/// holding the original image.
-fn default_fs_is_case_insensitive() -> bool {
-    cfg!(any(windows, target_os = "macos"))
-}
-
 /// Compares two paths for filesystem-level equivalence.
 ///
 /// Paths that already exist are canonicalized first: that resolves symlink
 /// aliasing, `..` components, on-disk case, Unicode normalization, and
 /// Windows verbatim prefixes. Planned outputs usually do not exist yet, so
-/// the fallback is a component-wise comparison that follows the default case
-/// semantics of the filesystem.
+/// the fallback is a component-wise comparison that treats names as
+/// case-insensitive by default (see [`component_eq`]).
 pub(crate) fn paths_equivalent(a: &Path, b: &Path) -> bool {
     if let (Ok(canonical_a), Ok(canonical_b)) = (fs::canonicalize(a), fs::canonicalize(b)) {
         return canonical_a == canonical_b;
