@@ -397,6 +397,10 @@ fn colorspace_to_string(colorspace: &ColorSpace) -> String {
 ///   `./` and `../` literals in the joined result
 /// - Canonicalizing existing paths (resolves symlinks, case, remaining `..`)
 /// - Preserving UNC/verbatim prefixes on Windows
+///
+/// This is used for output directories and metadata paths. Input files are
+/// normalized separately without canonicalization so symlinked directory
+/// layouts and the user-visible path are preserved.
 fn normalize_path(path: &Path, current_dir: &Path) -> PathBuf {
     if path.as_os_str().is_empty() {
         return path.to_path_buf();
