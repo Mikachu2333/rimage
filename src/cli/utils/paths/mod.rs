@@ -133,6 +133,9 @@ fn file_name_with_suffix(file_name: &OsStr, suffix: &str) -> OsString {
 }
 
 fn validate_output_file_name(name: &OsStr) -> Result<(), String> {
+    #[cfg(not(windows))]
+    let _ = name;
+
     #[cfg(windows)]
     {
         let text = name
