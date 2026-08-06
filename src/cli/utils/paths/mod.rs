@@ -208,10 +208,40 @@ fn strip_prefix_components(path: &Path, base: &Path) -> Option<PathBuf> {
 }
 
 fn component_eq(a: &OsStr, b: &OsStr) -> bool {
-    a == b || (cfg!(windows) && a.eq_ignore_ascii_case(b))
+    if a == b {
+        return true;
+    }
+    if !default_fs_is_case_insensitive() {
+        return false;
+    }
+    match (a.to_str(), b.to_str()) {
+        // Use Unicode-aware folding where possible; APFS folds more than ASCII.
+        (Some(a), Some(b)) => a.to_lowercase() == b.to_lowercase(),
+        _ => a.eq_ignore_ascii_case(b),
+    }
 }
 
-fn paths_equivalent(a: &Path, b: &Path) -> bool {
+/// Windows and macOS default to case-insensitive filesystems (APFS/HFS+ on
+/// macOS unless created case-sensitive). Path comparisons must follow the
+/// filesystem's case semantics, or a same-format conversion such as
+/// `--backup --suffix @Backup` could publish over the case-differing backup
+/// holding the original image.
+fn default_fs_is_case_insensitive() -> bool {
+    cfg!(any(windows, target_os = "macos"))
+}
+
+/// Compares two paths for filesystem-level equivalence.
+///
+/// Paths that already exist are canonicalized first: that resolves symlink
+/// aliasing, `..` components, on-disk case, Unicode normalization, and
+/// Windows verbatim prefixes. Planned outputs usually do not exist yet, so
+/// the fallback is a component-wise comparison that follows the default case
+/// semantics of the filesystem.
+pub(crate) fn paths_equivalent(a: &Path, b: &Path) -> bool {
+    if let (Ok(canonical_a), Ok(canonical_b)) = (fs::canonicalize(a), fs::canonicalize(b)) {
+        return canonical_a == canonical_b;
+    }
+
     let mut a = a.components();
     let mut b = b.components();
     loop {
