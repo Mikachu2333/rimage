@@ -86,6 +86,88 @@ fn single_file_recursive_stays_under_output_directory() {
     let _ = std::fs::remove_dir_all(&out);
 }
 
+/// A same-format, in-place conversion with `--backup` and a suffix that
+/// produces the same name as the backup (e.g. `-b -s @backup` on `img.png`)
+/// must fail instead of publishing the temp output over the backup holding
+/// the original image.
+#[test]
+fn backup_path_collision_does_not_destroy_original() {
+    let exe = env!("CARGO_BIN_EXE_rimage");
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    let dir = format!("{manifest}/target/tmp-backup-collision");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let input = format!("{dir}/img.png");
+    std::fs::copy(format!("{manifest}/tests/files/png/f1t.png"), &input).unwrap();
+    let original = std::fs::read(&input).unwrap();
+
+    let status = Command::new(exe)
+        .args(["png", &input, "-b", "-s", "@backup", "-t", "2", "--quiet"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+
+    assert!(!status.success(), "colliding -b/-s must not report success");
+
+    // The original must be untouched and no backup or temp file must remain.
+    assert_eq!(std::fs::read(&input).unwrap(), original);
+    assert!(!std::path::Path::new(&format!("{dir}/img@backup.png")).exists());
+    let residue = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter(|entry| {
+            entry
+                .as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains("rimage-tmp")
+        })
+        .count();
+    assert_eq!(residue, 0, "no temporary output files may remain");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A `--backup` destination left by an earlier run must never be overwritten
+/// or deleted: it holds the preserved original image.
+#[test]
+fn existing_backup_is_never_overwritten() {
+    let exe = env!("CARGO_BIN_EXE_rimage");
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    let dir = format!("{manifest}/target/tmp-existing-backup");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let input = format!("{dir}/img.png");
+    std::fs::copy(format!("{manifest}/tests/files/png/f1t.png"), &input).unwrap();
+    let original_input = std::fs::read(&input).unwrap();
+
+    let backup = format!("{dir}/img@backup.png");
+    let precious = b"pre-existing backup content".to_vec();
+    std::fs::write(&backup, &precious).unwrap();
+
+    let status = Command::new(exe)
+        .args(["png", &input, "-b", "-t", "2", "--quiet"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+
+    assert!(!status.success(), "an existing backup must not report success");
+    assert_eq!(
+        std::fs::read(&input).unwrap(),
+        original_input,
+        "input must be untouched"
+    );
+    assert_eq!(
+        std::fs::read(&backup).unwrap(),
+        precious,
+        "pre-existing backup must be preserved"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Failure to produce every output must be reflected in a non-zero exit code.
 #[test]
 fn exit_code_is_nonzero_when_a_file_fails() {
