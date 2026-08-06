@@ -24,13 +24,13 @@ impl CommonArgs for Command {
 
                 This option should be used in conjunction with the --directory option."#})
                 .requires("directory"),
-            arg!(-s --suffix [SUFFIX] "Adds the '@suffix' to the names of output file(s).")
-                .long_help(indoc! {r#"Adds the '@suffix' to the names of output file(s).
+            arg!(-s --suffix [SUFFIX] "Adds the suffix to the names of output file(s).")
+                .long_help(indoc! {r#"Adds the suffix to the names of output file(s).
 
-                When '2x' is provided as the value, the resulting files will be renamed with the '@2x' suffix.
-                For example, a file named 'file.jpeg' will become 'file@2x.jpeg'.
+                When '2x' is provided as the value, the resulting files will be renamed with the '2x' suffix.
+                For example, a file named 'file.jpeg' will become 'file2x.jpeg'.
 
-                If no suffix is provided, the default updated suffix '@updated' will be added to the resulting files."#})
+                If no suffix is provided, the default suffix 'updated' will be added to the resulting files."#})
                 .default_missing_value("updated"),
             arg!(-b --backup "Adds the '@backup' to the names of input file(s)."),
             arg!(-t --threads <NUM> "The maximum number of images to process concurrently.")
