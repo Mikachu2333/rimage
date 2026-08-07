@@ -518,11 +518,31 @@ fn compute_backup_path(input: &Path) -> PathBuf {
     input.with_file_name(&backup_name)
 }
 
-/// Creates a backup of `input` at `backup_path` without overwriting an
-/// existing destination. Prefers a hard link; falls back to copying the bytes
-/// for filesystems without hard link support. `fs::copy` is deliberately not
-/// used because it truncates an existing destination, which could destroy the
-/// original image preserved by an earlier run.
+/// Closes and removes an unfinished backup destination on drop unless the backup was fully written (see [`create_backup`]).
+/// Without this, a failed copy or flush would strand a partial `<stem>@backup.<ext>` file, and every later `--backup` run would refuse to process the input because the destination already exists.
+struct BackupFileGuard {
+    path: PathBuf,
+    file: Option<File>,
+    committed: bool,
+}
+
+impl Drop for BackupFileGuard {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        // Close the handle before removing the file so cleanup also works on
+        // Windows, where an open handle blocks deletion.
+        if let Some(file) = self.file.take() {
+            drop(file);
+        }
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+/// Creates a backup of `input` at `backup_path` without overwriting an existing destination.
+/// Prefers a hard link; falls back to copying the bytes for filesystems without hard link support.
+/// `fs::copy` is deliberately not used because it truncates an existing destination, which could destroy the original image preserved by an earlier run.
 fn create_backup(input: &Path, backup_path: &Path) -> std::io::Result<()> {
     match fs::hard_link(input, backup_path) {
         Ok(()) => return Ok(()),
@@ -535,12 +555,20 @@ fn create_backup(input: &Path, backup_path: &Path) -> std::io::Result<()> {
     }
 
     let mut source = fs::File::open(input)?;
-    let mut destination = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(backup_path)?;
-    std::io::copy(&mut source, &mut destination)?;
+    let mut guard = BackupFileGuard {
+        path: backup_path.to_path_buf(),
+        file: Some(
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(backup_path)?,
+        ),
+        committed: false,
+    };
+    let destination = guard.file.as_mut().expect("backup file is present");
+    std::io::copy(&mut source, destination)?;
     destination.flush()?;
+    guard.committed = true;
     Ok(())
 }
 
@@ -1136,5 +1164,31 @@ mod tests {
         let upper = output_path_key(Path::new("/Img@Backup.PNG"));
         let lower = output_path_key(Path::new("/img@backup.png"));
         assert_eq!(upper, lower);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_backup_copy_removes_partial_destination() {
+        let root = std::env::temp_dir().join(format!(
+            "rimage-backup-cleanup-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+
+        // A directory opens successfully on Unix but fails during `io::copy`,
+        // which exercises the failure path between `create_new` and commit.
+        let input = root.join("not-a-file");
+        fs::create_dir_all(&input).unwrap();
+        let backup = root.join("backup.png");
+
+        let result = create_backup(&input, &backup);
+
+        assert!(result.is_err(), "copying a directory as a file must fail");
+        assert!(!backup.exists(), "partial backup must be cleaned up");
+        fs::remove_dir_all(&root).unwrap();
     }
 }
