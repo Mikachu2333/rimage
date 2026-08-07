@@ -310,5 +310,72 @@ fn contains_glob_meta(path: &Path) -> bool {
         .is_some_and(|s| s.contains(['*', '?', '[', ']']))
 }
 
+/// File name of the UTF-8 file list that is expanded into its listed inputs.
+const FILE_LIST_NAME: &str = "file.list";
+
+/// Expands `file.list` inputs into the files they list.
+///
+/// When at least one input is a `file.list`, all other input arguments are
+/// ignored and only the file lists are expanded. Each `file.list` (compared
+/// case-insensitively as a fail-safe default) is read as a UTF-8 text file
+/// containing one file path per line. Blank lines and surrounding whitespace
+/// are ignored. Every listed path is passed through `normalize` (tilde
+/// expansion and current-directory joining) and then expanded with
+/// [`collect_files`], so glob patterns work inside the list. Nested
+/// `file.list` entries are not expanded recursively.
+pub fn expand_file_lists<F>(inputs: &[PathBuf], normalize: F) -> Result<Vec<PathBuf>, String>
+where
+    F: Fn(&Path) -> PathBuf,
+{
+    let has_file_list = inputs.iter().any(|input| is_file_list_path(input));
+    if has_file_list {
+        let ignored = inputs
+            .iter()
+            .filter(|input| !is_file_list_path(input))
+            .collect::<Vec<_>>();
+        if !ignored.is_empty() {
+            log::warn!(
+                "file.list input(s) provided; ignoring {} other input argument(s)",
+                ignored.len()
+            );
+            log::debug!("Ignored input arguments: {ignored:#?}");
+        }
+    }
+
+    let mut files = Vec::new();
+    for input in inputs {
+        if is_file_list_path(input) {
+            for entry in read_file_list_entries(input)? {
+                let normalized = normalize(&entry);
+                files.extend(collect_files(std::slice::from_ref(&normalized)));
+            }
+        } else if !has_file_list {
+            files.extend(collect_files(std::slice::from_ref(input)));
+        }
+    }
+    Ok(files)
+}
+
+fn is_file_list_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case(FILE_LIST_NAME))
+}
+
+fn read_file_list_entries(path: &Path) -> Result<Vec<PathBuf>, String> {
+    let content = fs::read_to_string(path).map_err(|error| {
+        format!(
+            "Failed to read file list {} as UTF-8: {error}",
+            path.display()
+        )
+    })?;
+    Ok(content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(PathBuf::from)
+        .collect())
+}
+
 #[cfg(test)]
 mod tests;

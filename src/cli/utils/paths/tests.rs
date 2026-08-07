@@ -193,6 +193,106 @@ fn collect_files_expands_globs_but_prefers_existing_literals() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn file_list_name_matches_case_insensitively() {
+    assert!(is_file_list_path(Path::new("file.list")));
+    assert!(is_file_list_path(Path::new("./FILE.LIST")));
+    assert!(is_file_list_path(&Path::new("dir").join("File.List")));
+    assert!(!is_file_list_path(Path::new("other.list")));
+    assert!(!is_file_list_path(Path::new("file.txt")));
+    assert!(!is_file_list_path(Path::new("myfile.list")));
+}
+
+#[test]
+fn file_list_reads_one_path_per_line() {
+    let root = unique_test_dir("file-list");
+    fs::create_dir_all(&root).unwrap();
+    let list = root.join("file.list");
+    fs::write(
+        &list,
+        b"photos/a.jpg\r\n  photos/b.jpg\t\n\n   \n#not-a-comment.jpg\n",
+    )
+    .unwrap();
+
+    let entries = read_file_list_entries(&list).unwrap();
+    assert_eq!(
+        entries,
+        vec![
+            PathBuf::from("photos/a.jpg"),
+            PathBuf::from("photos/b.jpg"),
+            PathBuf::from("#not-a-comment.jpg"),
+        ]
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn file_list_must_be_readable_utf8() {
+    let root = unique_test_dir("file-list-utf8");
+    fs::create_dir_all(&root).unwrap();
+    let list = root.join("file.list");
+    fs::write(&list, b"\xff\xfe invalid utf-8").unwrap();
+
+    let error = read_file_list_entries(&list).unwrap_err();
+    assert!(error.contains("file.list"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn expand_file_lists_uses_only_lists_and_ignores_other_inputs() {
+    let root = unique_test_dir("expand-file-list");
+    fs::create_dir_all(root.join("photos")).unwrap();
+    fs::write(root.join("photos/a.jpg"), b"a").unwrap();
+    fs::write(root.join("photos/a.png"), b"a").unwrap();
+    fs::write(root.join("photos/b.png"), b"b").unwrap();
+    fs::write(root.join("direct.jpg"), b"d").unwrap();
+    fs::write(root.join("file.list"), "photos/a.jpg\nphotos/*.png\n\n").unwrap();
+
+    let mut files = expand_file_lists(&[root.join("file.list"), root.join("direct.jpg")], |path| {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            root.join(path)
+        }
+    })
+    .unwrap();
+    files.sort();
+
+    let mut expected = vec![
+        root.join("photos/a.jpg"),
+        root.join("photos/a.png"),
+        root.join("photos/b.png"),
+    ];
+    expected.sort();
+    assert_eq!(files, expected);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn expand_file_lists_without_lists_keeps_all_inputs() {
+    let root = unique_test_dir("expand-without-list");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("direct.jpg"), b"d").unwrap();
+    fs::write(root.join("other.png"), b"o").unwrap();
+
+    let direct = root.join("direct.jpg");
+    let other = root.join("other.png");
+    let mut files = expand_file_lists(&[direct.clone(), other.clone()], |path| {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            root.join(path)
+        }
+    })
+    .unwrap();
+    files.sort();
+
+    let mut expected = vec![direct, other];
+    expected.sort();
+    assert_eq!(files, expected);
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn file_symlinks_are_accepted() {
