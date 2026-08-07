@@ -1,5 +1,7 @@
-extern crate winresource;
 use winresource::{VersionInfo, WindowsResource};
+
+// This is the pre-release version number.
+const VERSION_PRE: u16 = 0;
 
 fn main() {
     // only run if target os is windows
@@ -11,53 +13,24 @@ fn main() {
         return;
     }
 
+    let pack = |pre: u16| -> u64 {
+        (env_u64("CARGO_PKG_VERSION_MAJOR") << 48)
+            | (env_u64("CARGO_PKG_VERSION_MINOR") << 32)
+            | (env_u64("CARGO_PKG_VERSION_PATCH") << 16)
+            | u64::from(pre)
+    };
+
     let mut res = WindowsResource::new();
 
-    match std::env::var("CARGO_PKG_VERSION_PRE") {
-        Ok(success_info) => println!("{success_info}"),
-        Err(err_info) => println!("{err_info}"),
-    };
-
-    // Version   Ｘ.    Ｘ.    Ｘ.    Ｘ
-    //           ⇑     ⇑     ⇑     ⇑
-    //         MAJOR   MINOR  PATCH   PRE
-    let mut version: u64 = 0;
-    version |= {
-        std::env::var("CARGO_PKG_VERSION_MAJOR")
-            .unwrap()
-            .parse::<u64>()
-            .unwrap()
-            << 48
-    };
-    version |= {
-        std::env::var("CARGO_PKG_VERSION_MINOR")
-            .unwrap()
-            .parse::<u64>()
-            .unwrap()
-            << 32
-    };
-    version |= {
-        std::env::var("CARGO_PKG_VERSION_PATCH")
-            .unwrap()
-            .parse::<u64>()
-            .unwrap()
-            << 16
-    };
-
-    let product_version = version | {
-        let temp = std::env::var("CARGO_PKG_VERSION_PRE").unwrap();
-        if temp == *"" {
-            0_u64
-        } else {
-            temp.parse::<u64>().unwrap_or(0_u64)
-        }
-    };
-
-    res.set_version_info(VersionInfo::FILEVERSION, version)
-        .set_version_info(VersionInfo::PRODUCTVERSION, product_version);
+    res.set_version_info(VersionInfo::FILEVERSION, pack(VERSION_PRE))
+        .set_version_info(VersionInfo::PRODUCTVERSION, pack(VERSION_PRE));
 
     if let Err(e) = res.compile() {
         eprintln!("{e}");
         std::process::exit(1);
     }
+}
+
+fn env_u64(name: &str) -> u64 {
+    std::env::var(name).unwrap_or_default().parse().unwrap_or(0)
 }
