@@ -14,7 +14,7 @@ use std::{
 use cli::{
     cli,
     pipeline::{decode, operations},
-    utils::paths::{collect_files, get_paths, paths_equivalent},
+    utils::paths::{expand_file_lists, get_paths, paths_equivalent},
 };
 use console::{Term, style};
 use indicatif::{DecimalBytes, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
@@ -627,19 +627,26 @@ fn main() -> std::process::ExitCode {
             // Keep normalized absolute paths but do not canonicalize existing
             // inputs here: validation follows symlinks while preserving their
             // user-visible path and recursive directory layout.
-            let files: Vec<PathBuf> = matches
+            let normalize_input = |path: &Path| {
+                let expanded = expand_tilde_in_path(path);
+                if expanded.is_absolute() {
+                    join_normalized(Path::new(""), &expanded)
+                } else {
+                    join_normalized(&current_dir, &expanded)
+                }
+            };
+            let inputs: Vec<PathBuf> = matches
                 .get_many::<PathBuf>("files")
                 .expect("`files` is required")
-                .map(|path| {
-                    let expanded = expand_tilde_in_path(path);
-                    if expanded.is_absolute() {
-                        join_normalized(Path::new(""), &expanded)
-                    } else {
-                        join_normalized(&current_dir, &expanded)
-                    }
-                })
+                .map(|path| normalize_input(path))
                 .collect();
-            let files = collect_files(&files);
+            let files = match expand_file_lists(&inputs, normalize_input) {
+                Ok(files) => files,
+                Err(error) => {
+                    log::error!("{error}");
+                    return std::process::ExitCode::FAILURE;
+                }
+            };
             log::debug!("Resolved files: {files:#?}");
 
             let out_dir = matches

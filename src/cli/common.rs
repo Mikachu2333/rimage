@@ -12,7 +12,9 @@ impl CommonArgs for Command {
             arg!(files: <FILES> ... "Input file(s) to process.")
                 .long_help(indoc! {r#"Input file(s) to process.
 
-                If the file path contains spaces, enclose the path with double quotation marks on both sides."#})
+                If the file path contains spaces, enclose the path with double quotation marks on both sides.
+
+                A file named `file.list` is read as a UTF-8 file list with one input file per line. Blank lines are skipped, surrounding whitespace is ignored, and relative paths are resolved against the current working directory. When a `file.list` is provided, all other input file arguments are ignored."#})
                 .value_parser(value_parser!(PathBuf)),
             arg!(-d --directory <DIR> "The directory to write output file(s) to.")
                 .long_help(indoc! {r#"The directory to write output file(s) to.
