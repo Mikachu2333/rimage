@@ -139,6 +139,10 @@ jobs:
           cache: true
           target: ${{ matrix.target }}
 
+      - name: set up QEMU for cross emulation
+        if: matrix.cross
+        uses: docker/setup-qemu-action@v4
+
       - name: install cargo-nextest
         if: ${{ !matrix.cross }}
         uses: taiki-e/install-action@nextest

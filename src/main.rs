@@ -906,6 +906,7 @@ fn main() -> std::process::ExitCode {
                                     "{}: output was published and backup created, but the original input could not be removed: {error}",
                                     input.display()
                                 );
+                                return;
                             }
                         } else {
                             handle_error!(output, temporary.publish(&output));
