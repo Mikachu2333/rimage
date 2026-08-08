@@ -36,12 +36,27 @@ where
         })?;
         let color = self.out_colorspace();
 
-        let frames = self
-            .inner
+        let decoded_frames = self.inner.into_iter().collect::<Vec<_>>();
+        let timestamps = decoded_frames
+            .iter()
+            .map(|frame| frame.get_time_ms().max(0) as usize)
+            .collect::<Vec<_>>();
+        let fallback_duration = timestamps
+            .windows(2)
+            .filter_map(|pair| pair[1].checked_sub(pair[0]))
+            .rfind(|duration| *duration > 0)
+            .unwrap_or(100);
+
+        let frames = decoded_frames
             .into_iter()
             .enumerate()
-            .map(|(idx, frame)| {
-                Frame::from_u8(frame.get_image(), color, idx, frame.get_time_ms() as usize)
+            .map(|(index, frame)| {
+                let duration_ms = timestamps
+                    .get(index + 1)
+                    .and_then(|next| next.checked_sub(timestamps[index]))
+                    .filter(|duration| *duration > 0)
+                    .unwrap_or(fallback_duration);
+                Frame::from_u8(frame.get_image(), color, duration_ms, 1000)
             })
             .collect::<Vec<_>>();
 

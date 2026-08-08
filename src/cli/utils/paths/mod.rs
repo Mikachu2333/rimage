@@ -7,7 +7,11 @@ pub fn get_paths(
     recursive: bool,
 ) -> impl Iterator<Item = (PathBuf, PathBuf)> {
     let common_path = if recursive {
-        get_common_path(&files)
+        let parents = files
+            .iter()
+            .filter_map(|path| path.parent().map(Path::to_path_buf))
+            .collect::<Vec<_>>();
+        get_common_path(&parents)
     } else {
         None
     };
@@ -28,8 +32,16 @@ pub fn get_paths(
             let mut out_path = match &out_dir {
                 Some(dir) => {
                     if let Some(common) = &common_path {
-                        let relative_path =
-                            path.parent().unwrap().strip_prefix(common).unwrap_or(&path);
+                        let parent = path.parent()?;
+                        let relative_path = match parent.strip_prefix(common) {
+                            Ok(relative) if !relative.is_absolute() => relative,
+                            _ => {
+                                log::error!(
+                                    "Cannot preserve directory structure for {path:?} under {common:?}"
+                                );
+                                return None;
+                            }
+                        };
                         dir.join(relative_path)
                     } else {
                         dir.to_owned()

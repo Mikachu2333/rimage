@@ -28,7 +28,7 @@ This library is a extension for [`zune_image`] crate. For proper usage you will 
 
 ### Decoders
 
-```
+```no_run
 use std::fs::File;
 
 use rimage::codecs::avif::AvifDecoder;

@@ -49,14 +49,14 @@ impl EncoderTrait for OxiPngEncoder {
         }
 
         // inlined `to_u8` method because its private
-        let _colorspace = image.colorspace();
+        let colorspace = image.colorspace();
         let data = if image.depth() == BitDepth::Eight {
             image.flatten_frames::<u8>()
         } else if image.depth() == BitDepth::Sixteen {
             image
                 .frames_ref()
                 .iter()
-                .map(|z| z.u16_to_native_endian())
+                .map(|frame| frame.u16_to_big_endian(colorspace))
                 .collect()
         } else {
             return Err(ImageErrors::EncodeErrors(ImgEncodeErrors::Generic(
@@ -65,7 +65,11 @@ impl EncoderTrait for OxiPngEncoder {
         }
         .into_iter()
         .next()
-        .unwrap();
+        .ok_or({
+            ImageErrors::EncodeErrors(ImgEncodeErrors::GenericStatic(
+                "Cannot encode an image with no frames",
+            ))
+        })?;
 
         #[allow(unused_mut)]
         let mut img = oxipng::RawImage::new(
