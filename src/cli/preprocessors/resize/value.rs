@@ -5,7 +5,6 @@ use regex::Regex;
 
 static WIDTH_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?P<width>\d+)").unwrap());
 static HEIGHT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?P<height>\d+)").unwrap());
-static SIDE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?P<side>\d+)").unwrap());
 
 /// Markers that select which dimension a resize value is anchored to.
 /// Only one of them may appear in a single value.
@@ -84,14 +83,22 @@ fn scale_side(width: usize, height: usize, side: usize, anchor_is_width: bool) -
 
 /// Extracts the side length from a longest/shortest side value.
 ///
+/// The marker may sit on either end of the digits, the same spellings the width
+/// and height values accept, but nothing else may appear in the value. Pulling
+/// the first run of digits out of anything else would silently accept typos
+/// like `1.5l`, which would resize down to a single pixel.
+///
 /// A zero length is rejected here rather than at resize time, because it can
 /// never produce a valid image and the error is clearer next to the input.
-fn parse_side(s: &str) -> Result<usize, anyhow::Error> {
-    let Some(cap) = SIDE_RE.captures(s) else {
+fn parse_side(s: &str, marker: char) -> Result<usize, anyhow::Error> {
+    let Some(digits) = s.strip_prefix(marker).or_else(|| s.strip_suffix(marker)) else {
         return Err(anyhow!("Invalid resize value"));
     };
 
-    let side: usize = cap["side"].parse()?;
+    let side: usize = digits
+        .trim()
+        .parse()
+        .map_err(|_| anyhow!("Invalid resize value"))?;
 
     if side == 0 {
         return Err(anyhow!("Side length should be greater than 0"));
@@ -150,8 +157,8 @@ impl std::str::FromStr for ResizeValue {
 
                 Ok(Self::Dimensions(None, Some(cap["height"].parse()?)))
             }
-            s if s.contains('l') => Ok(Self::LongestSide(parse_side(&s)?)),
-            s if s.contains('s') => Ok(Self::ShortestSide(parse_side(&s)?)),
+            s if s.contains('l') => Ok(Self::LongestSide(parse_side(&s, 'l')?)),
+            s if s.contains('s') => Ok(Self::ShortestSide(parse_side(&s, 's')?)),
             s if s.contains('x') => {
                 let dimensions: Vec<&str> = s.split('x').collect();
                 if dimensions.len() > 2 {
@@ -325,6 +332,21 @@ mod tests {
     fn from_str_side_rejects_zero() {
         assert!("0l".parse::<ResizeValue>().is_err());
         assert!("0s".parse::<ResizeValue>().is_err());
+    }
+
+    #[test]
+    fn from_str_side_rejects_anything_around_the_digits() {
+        // Taking the first run of digits out of the value would turn `1.5l`
+        // into a single pixel image instead of an error.
+        for value in [
+            "1.5l", "1.5s", "200l300", "200s300", "abc200l", "200sfoo", "2 0 0 l", "200.l",
+            "200lol", "l200l",
+        ] {
+            assert!(
+                value.parse::<ResizeValue>().is_err(),
+                "{value} should not parse"
+            );
+        }
     }
 
     #[test]
