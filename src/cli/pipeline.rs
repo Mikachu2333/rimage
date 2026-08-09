@@ -629,46 +629,46 @@ mod tests {
     }
 
     #[test]
-    fn reduce_is_an_alias_for_no_upscale() {
+    fn reduce_only_is_an_alias_for_no_upscale() {
         for (width, height) in [(4000, 2000), (800, 400), (1000, 500)] {
             assert_eq!(
-                run(&["--resize", "1000l", "--reduce"], width, height),
+                run(&["--resize", "1000l", "--reduce-only"], width, height),
                 run(&["--resize", "1000l", "--no-upscale"], width, height),
-                "--reduce diverged from --no-upscale on {width}x{height}"
+                "--reduce-only diverged from --no-upscale on {width}x{height}"
             );
         }
     }
 
     #[test]
-    fn enlarge_is_an_alias_for_no_downscale() {
+    fn enlarge_only_is_an_alias_for_no_downscale() {
         for (width, height) in [(4000, 2000), (800, 400), (1000, 500)] {
             assert_eq!(
-                run(&["--resize", "1000l", "--enlarge"], width, height),
+                run(&["--resize", "1000l", "--enlarge-only"], width, height),
                 run(&["--resize", "1000l", "--no-downscale"], width, height),
-                "--enlarge diverged from --no-downscale on {width}x{height}"
+                "--enlarge-only diverged from --no-downscale on {width}x{height}"
             );
         }
     }
 
     #[test]
-    fn reduce_and_enlarge_pick_the_direction_their_names_promise() {
+    fn reduce_only_and_enlarge_only_pick_the_direction_their_names_promise() {
         // Guards against the aliases being wired to the opposite flag, which is
         // the whole risk of naming a double negative.
         assert_eq!(
-            run(&["--resize", "1000l", "--reduce"], 4000, 2000),
+            run(&["--resize", "1000l", "--reduce-only"], 4000, 2000),
             (1, (1000, 500))
         );
         assert_eq!(
-            run(&["--resize", "1000l", "--reduce"], 800, 400),
+            run(&["--resize", "1000l", "--reduce-only"], 800, 400),
             (0, (800, 400))
         );
 
         assert_eq!(
-            run(&["--resize", "1000l", "--enlarge"], 800, 400),
+            run(&["--resize", "1000l", "--enlarge-only"], 800, 400),
             (1, (1000, 500))
         );
         assert_eq!(
-            run(&["--resize", "1000l", "--enlarge"], 4000, 2000),
+            run(&["--resize", "1000l", "--enlarge-only"], 4000, 2000),
             (0, (4000, 2000))
         );
     }
@@ -680,15 +680,15 @@ mod tests {
         // height follows the aspect ratio, and images at or under the cap keep
         // their original size.
         assert_eq!(
-            run(&["--resize", "400w", "--reduce"], 200, 100),
+            run(&["--resize", "400w", "--reduce-only"], 200, 100),
             (0, (200, 100))
         );
         assert_eq!(
-            run(&["--resize", "400w", "--reduce"], 400, 2000),
+            run(&["--resize", "400w", "--reduce-only"], 400, 2000),
             (0, (400, 2000))
         );
         assert_eq!(
-            run(&["--resize", "400w", "--reduce"], 800, 900),
+            run(&["--resize", "400w", "--reduce-only"], 800, 900),
             (1, (400, 450))
         );
     }

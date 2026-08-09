@@ -39,7 +39,7 @@ impl Preprocessors for Command {
 
                     The longest and shortest side values pick the anchor per image, so a batch of
                     mixed portrait and landscape images comes out at a consistent size. Combine them
-                    with --reduce or --enlarge to leave images that already fit untouched."#})
+                    with --reduce-only or --enlarge-only to leave images that already fit untouched."#})
                     .value_parser(value_parser!(ResizeValue))
                     .action(ArgAction::Append),
 
@@ -55,12 +55,12 @@ impl Preprocessors for Command {
                     .overrides_with("no-downscale"),
                 #[cfg(feature = "resize")]
                 arg!(--"no-downscale" "Disable downscaling when resizing.")
-                    .long_help(indoc! {r#"Disable downscaling when resizing. [aliases: --enlarge]
+                    .long_help(indoc! {r#"Disable downscaling when resizing. [aliases: --enlarge-only]
 
                     This is useful when you don't want to reduce the size of the image when it is larger than the specified size.
                     Images that are already larger than the specified size are left untouched, so this is the enlarge only mode.
                     It is recommended to use this option with --resize"#})
-                    .visible_alias("enlarge")
+                    .visible_alias("enlarge-only")
                     .action(ArgAction::SetTrue)
                     .requires("resize"),
 
@@ -76,12 +76,12 @@ impl Preprocessors for Command {
                     .overrides_with("no-upscale"),
                 #[cfg(feature = "resize")]
                 arg!(--"no-upscale" "Disable upscaling when resizing.")
-                    .long_help(indoc! {r#"Disable upscaling when resizing. [aliases: --reduce]
+                    .long_help(indoc! {r#"Disable upscaling when resizing. [aliases: --reduce-only]
 
                     This is useful when you don't want to increase the size of the image when it is smaller than the specified size.
                     Images that are already smaller than the specified size are left untouched, so this is the reduce only mode.
                     It is recommended to use this option with --resize"#})
-                    .visible_alias("reduce")
+                    .visible_alias("reduce-only")
                     .action(ArgAction::SetTrue)
                     .requires("resize"),
 

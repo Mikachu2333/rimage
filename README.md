@@ -107,8 +107,8 @@ rimage mozjpeg --resize 100w ./image.jpg
 rimage mozjpeg --resize 1000l ./images
 
 # Shrink images above 1000px only, leaving anything already smaller untouched
-# --reduce is an alias for --no-upscale, --enlarge for --no-downscale
-rimage mozjpeg --resize 1000l --reduce ./images
+# --reduce-only is an alias for --no-upscale, --enlarge-only for --no-downscale
+rimage mozjpeg --resize 1000l --reduce-only ./images
 ```
 
 #### Quantization (color palette reduction)
