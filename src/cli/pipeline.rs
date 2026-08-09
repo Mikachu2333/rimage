@@ -629,6 +629,51 @@ mod tests {
     }
 
     #[test]
+    fn reduce_is_an_alias_for_no_upscale() {
+        for (width, height) in [(4000, 2000), (800, 400), (1000, 500)] {
+            assert_eq!(
+                run(&["--resize", "1000l", "--reduce"], width, height),
+                run(&["--resize", "1000l", "--no-upscale"], width, height),
+                "--reduce diverged from --no-upscale on {width}x{height}"
+            );
+        }
+    }
+
+    #[test]
+    fn enlarge_is_an_alias_for_no_downscale() {
+        for (width, height) in [(4000, 2000), (800, 400), (1000, 500)] {
+            assert_eq!(
+                run(&["--resize", "1000l", "--enlarge"], width, height),
+                run(&["--resize", "1000l", "--no-downscale"], width, height),
+                "--enlarge diverged from --no-downscale on {width}x{height}"
+            );
+        }
+    }
+
+    #[test]
+    fn reduce_and_enlarge_pick_the_direction_their_names_promise() {
+        // Guards against the aliases being wired to the opposite flag, which is
+        // the whole risk of naming a double negative.
+        assert_eq!(
+            run(&["--resize", "1000l", "--reduce"], 4000, 2000),
+            (1, (1000, 500))
+        );
+        assert_eq!(
+            run(&["--resize", "1000l", "--reduce"], 800, 400),
+            (0, (800, 400))
+        );
+
+        assert_eq!(
+            run(&["--resize", "1000l", "--enlarge"], 800, 400),
+            (1, (1000, 500))
+        );
+        assert_eq!(
+            run(&["--resize", "1000l", "--enlarge"], 4000, 2000),
+            (0, (4000, 2000))
+        );
+    }
+
+    #[test]
     fn side_values_compose_with_the_filter_flag() {
         assert_eq!(
             run(&["--resize", "1000l", "--filter", "nearest"], 2000, 1000),
