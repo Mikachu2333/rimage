@@ -370,8 +370,19 @@ fn read_file_list_entries(path: &Path) -> Result<Vec<PathBuf>, String> {
         )
     })?;
     Ok(content
+        .strip_prefix('\u{FEFF}')
+        .unwrap_or(&content)
         .lines()
-        .map(str::trim)
+        .map(|s| {
+            let s = s.trim().trim_matches(['"', '\'', '/', '\\']);
+            if s.contains("\u{FFFD}") {
+                log::warn!(
+                    "Line {s} in `file.list` {} may not encoding with valid UTF-8.",
+                    path.display()
+                );
+            }
+            s
+        })
         .filter(|line| !line.is_empty())
         .map(PathBuf::from)
         .collect())
