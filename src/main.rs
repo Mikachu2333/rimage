@@ -1,5 +1,6 @@
 use std::{
     collections::HashSet,
+    ffi::OsStr,
     fs::{self, File},
     io::Write,
     path::{Path, PathBuf},
@@ -13,7 +14,7 @@ use std::{
 use cli::{
     cli,
     pipeline::{decode, operations},
-    utils::paths::{collect_files, get_paths},
+    utils::paths::{collect_files, get_paths, paths_equivalent},
 };
 use console::{Term, style};
 use indicatif::{DecimalBytes, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
@@ -244,26 +245,11 @@ fn append_output_extension(path: &mut PathBuf, extension: &str) {
 }
 
 fn output_path_key(path: &Path) -> String {
-    let key = path.to_string_lossy().into_owned();
-    if cfg!(windows) {
-        key.to_lowercase()
-    } else {
-        key
-    }
-}
-
-fn valid_suffix(suffix: &str) -> bool {
-    !suffix.is_empty()
-        && suffix != "."
-        && suffix != ".."
-        && !suffix.ends_with(['.', ' '])
-        && !suffix.chars().any(|character| {
-            character.is_control()
-                || matches!(
-                    character,
-                    '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
-                )
-        })
+    // Fold case in keys on every platform: path comparisons are treated as
+    // case-insensitive by default (fail-safe), so collisions between e.g.
+    // `img@Backup.png` and `img@backup.png` are detected before publishing
+    // over the backup. See `cli::utils::paths::component_eq`.
+    path.to_string_lossy().into_owned().to_lowercase()
 }
 
 fn size_ratio(output_size: u64, input_size: u64) -> f64 {
@@ -407,6 +393,10 @@ fn colorspace_to_string(colorspace: &ColorSpace) -> String {
 ///   `./` and `../` literals in the joined result
 /// - Canonicalizing existing paths (resolves symlinks, case, remaining `..`)
 /// - Preserving UNC/verbatim prefixes on Windows
+///
+/// This is used for output directories and metadata paths. Input files are
+/// normalized separately without canonicalization so symlinked directory
+/// layouts and the user-visible path are preserved.
 fn normalize_path(path: &Path, current_dir: &Path) -> PathBuf {
     if path.as_os_str().is_empty() {
         return path.to_path_buf();
@@ -491,7 +481,116 @@ fn expand_tilde_in_path(path: &Path) -> PathBuf {
     }
 }
 
-fn main() {
+/// Creates the target directory and verifies that existing symlinks/reparse
+/// points have not redirected it outside the requested output root.
+fn prepare_output_parent(output: &Path, output_root: Option<&Path>) -> std::io::Result<()> {
+    let parent = output.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let Some(root) = output_root else {
+        return Ok(());
+    };
+
+    fs::create_dir_all(root)?;
+    let canonical_root = root.canonicalize()?;
+    let canonical_parent = parent.canonicalize()?;
+    if !canonical_parent.starts_with(&canonical_root) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "output directory {} resolves outside {}",
+                parent.display(),
+                root.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Computes the `--backup` destination for an input file: `<stem>@backup.<ext>`
+/// next to the input.
+fn compute_backup_path(input: &Path) -> PathBuf {
+    let mut backup_name = input
+        .file_stem()
+        .unwrap_or_else(|| OsStr::new("backup"))
+        .to_os_string();
+    backup_name.push("@backup.");
+    backup_name.push(input.extension().unwrap_or_else(|| OsStr::new("bak")));
+    input.with_file_name(&backup_name)
+}
+
+/// Closes and removes an unfinished backup destination on drop unless the backup was fully written (see [`create_backup`]).
+/// Without this, a failed copy or flush would strand a partial `<stem>@backup.<ext>` file, and every later `--backup` run would refuse to process the input because the destination already exists.
+struct BackupFileGuard {
+    path: PathBuf,
+    file: Option<File>,
+    committed: bool,
+}
+
+impl Drop for BackupFileGuard {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        // Close the handle before removing the file so cleanup also works on
+        // Windows, where an open handle blocks deletion.
+        if let Some(file) = self.file.take() {
+            drop(file);
+        }
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+/// Creates a backup of `input` at `backup_path` without overwriting an existing destination.
+/// Prefers a hard link; falls back to copying the bytes for filesystems without hard link support.
+/// `fs::copy` is deliberately not used because it truncates an existing destination, which could destroy the original image preserved by an earlier run.
+fn create_backup(input: &Path, backup_path: &Path) -> std::io::Result<()> {
+    match fs::hard_link(input, backup_path) {
+        Ok(()) => return Ok(()),
+        Err(error) => {
+            log::debug!(
+                "{}: hard link backup failed, falling back to copy: {error}",
+                input.display()
+            );
+        }
+    }
+
+    let mut source = fs::File::open(input)?;
+    let mut guard = BackupFileGuard {
+        path: backup_path.to_path_buf(),
+        file: Some(
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(backup_path)?,
+        ),
+        committed: false,
+    };
+    let destination = guard.file.as_mut().expect("backup file is present");
+    std::io::copy(&mut source, destination)?;
+    destination.flush()?;
+    guard.committed = true;
+    Ok(())
+}
+
+/// Strips the Windows verbatim (`\\?\`) prefix from a canonicalized path for
+/// display and metadata purposes. `\\?\UNC\server\share` is restored to the
+/// regular UNC form. Non-Windows paths are returned unchanged.
+fn pretty_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(s) = path.to_str() {
+            if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+                return PathBuf::from(format!(r"\\{rest}"));
+            }
+            if let Some(rest) = s.strip_prefix(r"\\?\") {
+                return PathBuf::from(rest);
+            }
+        }
+    }
+    path.to_path_buf()
+}
+
+fn main() -> std::process::ExitCode {
     let logger = pretty_env_logger::formatted_builder()
         .parse_default_env()
         .filter_module("little_exif", log::LevelFilter::Off)
@@ -521,32 +620,32 @@ fn main() {
                 Ok(pool) => pool,
                 Err(error) => {
                     log::error!("Failed to create image worker pool: {error}");
-                    return;
+                    return std::process::ExitCode::FAILURE;
                 }
             };
 
-            // Normalize file paths: resolve ~, relative paths, canonicalize
+            // Keep normalized absolute paths but do not canonicalize existing
+            // inputs here: validation follows symlinks while preserving their
+            // user-visible path and recursive directory layout.
             let files: Vec<PathBuf> = matches
                 .get_many::<PathBuf>("files")
                 .expect("`files` is required")
-                .map(|p| normalize_path(p, &current_dir))
+                .map(|path| {
+                    let expanded = expand_tilde_in_path(path);
+                    if expanded.is_absolute() {
+                        join_normalized(Path::new(""), &expanded)
+                    } else {
+                        join_normalized(&current_dir, &expanded)
+                    }
+                })
                 .collect();
             let files = collect_files(&files);
             log::debug!("Resolved files: {files:#?}");
 
-            let file_count = files.iter().filter(|f| f.is_file()).count() as u64;
-
-            if file_count == 0 {
-                log::error!("No input files found. Check the file paths.");
-                if log::log_enabled!(log::Level::Debug) {
-                    log::debug!("Resolved files: {files:#?}");
-                }
-                return;
-            }
-
             let out_dir = matches
                 .get_one::<PathBuf>("directory")
                 .map(|p| normalize_path(p, &current_dir));
+            let output_root = out_dir.clone();
 
             let recursive = matches.get_flag("recursive");
             let backup = matches.get_flag("backup");
@@ -560,37 +659,42 @@ fn main() {
                 .unwrap_or(PathBuf::from("metadata.json"));
 
             let suffix = matches.get_one::<String>("suffix").cloned();
-            if suffix
-                .as_deref()
-                .is_some_and(|suffix| !valid_suffix(suffix))
-            {
-                log::error!("Suffix must be a valid single filename component");
-                return;
-            }
 
             if quiet || no_progress {
                 multi.set_draw_target(ProgressDrawTarget::hidden());
-            }
-
-            let pb_main = multi.add(ProgressBar::new(file_count));
-            pb_main.set_style(sty_main);
-            if file_count <= 1 {
-                pb_main.set_draw_target(ProgressDrawTarget::hidden());
             }
 
             let output_extension = match encoder(subcommand, matches) {
                 Ok(encoder) => encoder.to_extension(),
                 Err(error) => {
                     log::error!("Failed to initialize encoder: {error}");
-                    return;
+                    return std::process::ExitCode::FAILURE;
                 }
             };
-            let paths = get_paths(files, out_dir, suffix, recursive)
-                .map(|(input, mut output)| {
-                    append_output_extension(&mut output, output_extension);
-                    (input, output)
-                })
-                .collect::<Vec<_>>();
+            let paths = match get_paths(files, out_dir, suffix, recursive) {
+                Ok(paths) if !paths.is_empty() => paths
+                    .into_iter()
+                    .map(|(input, mut output)| {
+                        append_output_extension(&mut output, output_extension);
+                        (input, output)
+                    })
+                    .collect::<Vec<_>>(),
+                Ok(_) => {
+                    log::error!("No input files found. Check the file paths.");
+                    return std::process::ExitCode::FAILURE;
+                }
+                Err(error) => {
+                    log::error!("{error}");
+                    return std::process::ExitCode::FAILURE;
+                }
+            };
+            let file_count = paths.len() as u64;
+
+            let pb_main = multi.add(ProgressBar::new(file_count));
+            pb_main.set_style(sty_main);
+            if file_count <= 1 {
+                pb_main.set_draw_target(ProgressDrawTarget::hidden());
+            }
 
             let input_paths = paths
                 .iter()
@@ -605,14 +709,14 @@ fn main() {
                         "Multiple input files resolve to the same output path: {}",
                         output.display()
                     );
-                    return;
+                    return std::process::ExitCode::FAILURE;
                 }
                 if input_key != output_key && input_paths.contains(&output_key) {
                     log::error!(
                         "Output path would overwrite another input file: {}",
                         output.display()
                     );
-                    return;
+                    return std::process::ExitCode::FAILURE;
                 }
             }
             if output_metadata {
@@ -622,7 +726,7 @@ fn main() {
                         "Metadata path conflicts with an input or output image: {}",
                         metadata_path.display()
                     );
-                    return;
+                    return std::process::ExitCode::FAILURE;
                 }
             }
 
@@ -638,6 +742,7 @@ fn main() {
                     let sty_aux_encode = sty_aux_encode.clone();
                     let state = Arc::clone(&state);
                     let current_dir = current_dir.clone();
+                    let output_root = output_root.clone();
                     s.spawn(move |_| {
                         // Acquire the permit on the worker itself: rayon schedules the
                         // scope closure onto a pool worker, so blocking the caller would
@@ -658,6 +763,51 @@ fn main() {
                             pb: pb.clone(),
                             pb_main: pb_main.clone(),
                         };
+
+                        // A same-format, in-place conversion can produce an
+                        // output path identical to the --backup path (e.g.
+                        // `-b -s @backup` on `img.png`). Publishing the temp
+                        // output would then overwrite the backup holding the
+                        // original image, silently destroying it. Detect the
+                        // collision before any decoding or rename happens.
+                        let backup_path = backup.then(|| compute_backup_path(&input));
+                        if let Some(backup_path) = &backup_path
+                            && paths_equivalent(&output, backup_path)
+                        {
+                            log::error!(
+                                "{}: output path {} is the same as the --backup path {}; \
+                                 use a different --suffix or drop --backup",
+                                input.display(),
+                                output.display(),
+                                backup_path.display()
+                            );
+                            return;
+                        }
+                        // A backup left by an earlier run preserves the
+                        // original image; refuse to overwrite or delete it.
+                        // Fail fast instead of encoding the image first.
+                        if let Some(backup_path) = &backup_path {
+                            match fs::symlink_metadata(backup_path) {
+                                Ok(_) => {
+                                    log::error!(
+                                        "{}: --backup destination already exists: {}; \
+                                         refusing to overwrite it",
+                                        input.display(),
+                                        backup_path.display()
+                                    );
+                                    return;
+                                }
+                                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                                Err(error) => {
+                                    log::error!(
+                                        "{}: cannot inspect --backup destination {}: {error}",
+                                        input.display(),
+                                        backup_path.display()
+                                    );
+                                    return;
+                                }
+                            }
+                        }
 
                         let mut ops: Vec<Box<dyn OperationsTrait>> = Vec::new();
 
@@ -717,9 +867,10 @@ fn main() {
 
                         pb.set_style(sty_aux_encode.clone());
 
-                        if let Some(parent) = output.parent() {
-                            handle_error!(output, fs::create_dir_all(parent));
-                        }
+                        handle_error!(
+                            output,
+                            prepare_output_parent(&output, output_root.as_deref())
+                        );
                         let (temporary, output_file) =
                             handle_error!(output, TemporaryOutput::new(&output));
 
@@ -732,25 +883,13 @@ fn main() {
                             );
                         }
 
-                        if backup {
-                            let backup_name = format!(
-                                "{}@backup.{}",
-                                input
-                                    .file_stem()
-                                    .and_then(|s| s.to_str())
-                                    .unwrap_or("backup"),
-                                input.extension().and_then(|s| s.to_str()).unwrap_or("bak"),
-                            );
-                            let backup_path = input.with_file_name(&backup_name);
-                            if let Err(hard_link_error) = fs::hard_link(&input, &backup_path) {
-                                log::debug!(
-                                    "{}: hard link backup failed, falling back to copy: {hard_link_error}",
-                                    input.display()
-                                );
-                                handle_error!(input, fs::copy(&input, &backup_path));
+                        if let Some(backup_path) = backup_path.as_deref() {
+                            if let Err(error) = create_backup(&input, backup_path) {
+                                log::error!("{}: {error}", input.display());
+                                return;
                             }
                             if let Err(error) = temporary.publish(&output) {
-                                if let Err(cleanup_error) = fs::remove_file(&backup_path) {
+                                if let Err(cleanup_error) = fs::remove_file(backup_path) {
                                     log::error!(
                                         "{}: publish failed ({error}); removing the new backup also failed: {cleanup_error}",
                                         output.display()
@@ -767,6 +906,7 @@ fn main() {
                                     "{}: output was published and backup created, but the original input could not be removed: {error}",
                                     input.display()
                                 );
+                                return;
                             }
                         } else {
                             handle_error!(output, temporary.publish(&output));
@@ -779,10 +919,11 @@ fn main() {
                         let processed_at = get_current_timestamp();
                         let output_created = get_current_timestamp();
 
-                        let mut state = state.lock().unwrap();
+                        let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
 
-                        let absolute_input_path = normalize_path(&input, &current_dir);
-                        let absolute_output_path = normalize_path(&output, &current_dir);
+                        let absolute_input_path = pretty_path(&normalize_path(&input, &current_dir));
+                        let absolute_output_path =
+                            pretty_path(&normalize_path(&output, &current_dir));
 
                         state.results.push(Result {
                             output: output.to_path_buf(),
@@ -834,7 +975,7 @@ fn main() {
             });
             });
 
-            let mut state = state.lock().unwrap();
+            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
 
             // Update final metadata calculations
             if let Some(ref mut meta) = state.metadata.as_mut() {
@@ -860,17 +1001,16 @@ fn main() {
                 let term = Term::stdout();
 
                 if state.results.len() > 1 {
-                    term.write_line(&format!(
+                    let _ = term.write_line(&format!(
                         "{:<path_width$} {}",
                         style("File").bold(),
                         style("Size").bold(),
-                    ))
-                    .unwrap();
+                    ));
 
                     for result in state.results.iter() {
                         let difference = size_ratio(result.output_size, result.input_size) * 100.0;
 
-                        term.write_line(&format!(
+                        let _ = term.write_line(&format!(
                             "{:<path_width$} {} > {} {}",
                             result.output.display(),
                             style(DecimalBytes(result.input_size)).blue(),
@@ -880,8 +1020,7 @@ fn main() {
                             } else {
                                 style(format!("{:.2}%", difference - 100.0)).green()
                             },
-                        ))
-                        .unwrap();
+                        ));
                     }
                 }
 
@@ -923,6 +1062,7 @@ fn main() {
                     file_count,
                     rust_log_hint
                 );
+                return std::process::ExitCode::FAILURE;
             }
 
             if output_metadata && let Some(metadata) = state.metadata.as_ref() {
@@ -937,7 +1077,7 @@ fn main() {
                                 "Failed to create metadata directory {}: {error}",
                                 parent.display()
                             );
-                            return;
+                            return std::process::ExitCode::FAILURE;
                         }
                         match TemporaryOutput::new(&metadata_path) {
                             Ok((temporary, mut file)) => {
@@ -950,20 +1090,28 @@ fn main() {
                                         "Failed to write metadata {}: {error}",
                                         metadata_path.display()
                                     );
+                                    return std::process::ExitCode::FAILURE;
                                 }
                             }
-                            Err(error) => log::error!(
-                                "Failed to create metadata output {}: {error}",
-                                metadata_path.display()
-                            ),
+                            Err(error) => {
+                                log::error!(
+                                    "Failed to create metadata output {}: {error}",
+                                    metadata_path.display()
+                                );
+                                return std::process::ExitCode::FAILURE;
+                            }
                         }
                     }
-                    Err(error) => log::error!("Failed to serialize metadata: {error}"),
+                    Err(error) => {
+                        log::error!("Failed to serialize metadata: {error}");
+                        return std::process::ExitCode::FAILURE;
+                    }
                 }
             }
         }
         None => unreachable!("clap ensures a subcommand is always provided"),
     }
+    std::process::ExitCode::SUCCESS
 }
 
 #[cfg(test)]
@@ -1010,5 +1158,38 @@ mod tests {
         let result = join_normalized(&base, rel);
         let expected = base.join("subdir").join("1.jpg");
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn output_path_key_folds_case_on_all_platforms() {
+        let upper = output_path_key(Path::new("/Img@Backup.PNG"));
+        let lower = output_path_key(Path::new("/img@backup.png"));
+        assert_eq!(upper, lower);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_backup_copy_removes_partial_destination() {
+        let root = std::env::temp_dir().join(format!(
+            "rimage-backup-cleanup-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+
+        // A directory opens successfully on Unix but fails during `io::copy`,
+        // which exercises the failure path between `create_new` and commit.
+        let input = root.join("not-a-file");
+        fs::create_dir_all(&input).unwrap();
+        let backup = root.join("backup.png");
+
+        let result = create_backup(&input, &backup);
+
+        assert!(result.is_err(), "copying a directory as a file must fail");
+        assert!(!backup.exists(), "partial backup must be cleaned up");
+        fs::remove_dir_all(&root).unwrap();
     }
 }

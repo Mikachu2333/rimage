@@ -80,7 +80,7 @@ By default rimage will place output images right in place of precious images, re
 # will place output images in `./output` directory, images may be overwritten if has the same name
 rimage mozjpeg -d ./output ./image.jpg
 
-# will rename all input files before processing with `@backup` suffix
+# will keep the original image as `<name>@backup.<ext>` next to the input
 rimage mozjpeg --backup ./image.jpg
 
 # will place output images in ./output directory preserving folder structure
