@@ -674,6 +674,26 @@ mod tests {
     }
 
     #[test]
+    fn width_anchor_with_reduce_caps_the_width_only() {
+        // Capping one dimension however long the other one is does not need a
+        // side value at all, the existing width anchor already covers it. The
+        // height follows the aspect ratio, and images at or under the cap keep
+        // their original size.
+        assert_eq!(
+            run(&["--resize", "400w", "--reduce"], 200, 100),
+            (0, (200, 100))
+        );
+        assert_eq!(
+            run(&["--resize", "400w", "--reduce"], 400, 2000),
+            (0, (400, 2000))
+        );
+        assert_eq!(
+            run(&["--resize", "400w", "--reduce"], 800, 900),
+            (1, (400, 450))
+        );
+    }
+
+    #[test]
     fn side_values_compose_with_the_filter_flag() {
         assert_eq!(
             run(&["--resize", "1000l", "--filter", "nearest"], 2000, 1000),
