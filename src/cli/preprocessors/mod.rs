@@ -33,7 +33,13 @@ impl Preprocessors for Command {
                     - 150%:    Adjust image size by this percentage
                     - 100x100: Resize image to Width×Height
                     - 100w:    Adjust image dimensions while maintaining the aspect ratio based on the width
-                    - 100h:    Adjust image dimensions while maintaining the aspect ratio based on the height"#})
+                    - 100h:    Adjust image dimensions while maintaining the aspect ratio based on the height
+                    - 100l:    Adjust image dimensions while maintaining the aspect ratio based on the longest side
+                    - 100s:    Adjust image dimensions while maintaining the aspect ratio based on the shortest side
+
+                    The longest and shortest side values pick the anchor per image, so a batch of
+                    mixed portrait and landscape images comes out at a consistent size. Combine them
+                    with --no-upscale or --no-downscale to leave images that already fit untouched."#})
                     .value_parser(value_parser!(ResizeValue))
                     .action(ArgAction::Append),
 

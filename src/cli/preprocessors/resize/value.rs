@@ -5,12 +5,21 @@ use regex::Regex;
 
 static WIDTH_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?P<width>\d+)").unwrap());
 static HEIGHT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?P<height>\d+)").unwrap());
+static SIDE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?P<side>\d+)").unwrap());
+
+/// Markers that select which dimension a resize value is anchored to.
+/// Only one of them may appear in a single value.
+const ANCHOR_MARKERS: [char; 4] = ['w', 'h', 'l', 's'];
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ResizeValue {
     Multiplier(f32),
     Percentage(f32),
     Dimensions(Option<usize>, Option<usize>),
+    /// Resize so that the longer of the two sides becomes this length.
+    LongestSide(usize),
+    /// Resize so that the shorter of the two sides becomes this length.
+    ShortestSide(usize),
 }
 
 impl ResizeValue {
@@ -42,8 +51,53 @@ impl ResizeValue {
 
                 (width, height)
             }
+
+            // Which side is the longest depends on the image, so the anchored
+            // side is picked per image instead of being fixed by the value.
+            ResizeValue::LongestSide(side) => scale_side(width, height, *side, width >= height),
+            ResizeValue::ShortestSide(side) => scale_side(width, height, *side, width <= height),
         }
     }
+}
+
+/// Scales an image so that one of its sides becomes `side`, preserving the aspect ratio.
+///
+/// `anchor_is_width` selects the side that is pinned to `side`. The other one is
+/// derived from the aspect ratio and never drops below a single pixel, which
+/// would otherwise fail the resize on extremely elongated images.
+fn scale_side(width: usize, height: usize, side: usize, anchor_is_width: bool) -> (usize, usize) {
+    // A degenerate image has no aspect ratio to preserve.
+    if width == 0 || height == 0 {
+        return (width, height);
+    }
+
+    if anchor_is_width {
+        let new_height = (side as f32 * height as f32 / width as f32) as usize;
+
+        (side, new_height.max(1))
+    } else {
+        let new_width = (side as f32 * width as f32 / height as f32) as usize;
+
+        (new_width.max(1), side)
+    }
+}
+
+/// Extracts the side length from a longest/shortest side value.
+///
+/// A zero length is rejected here rather than at resize time, because it can
+/// never produce a valid image and the error is clearer next to the input.
+fn parse_side(s: &str) -> Result<usize, anyhow::Error> {
+    let Some(cap) = SIDE_RE.captures(s) else {
+        return Err(anyhow!("Invalid resize value"));
+    };
+
+    let side: usize = cap["side"].parse()?;
+
+    if side == 0 {
+        return Err(anyhow!("Side length should be greater than 0"));
+    }
+
+    Ok(side)
 }
 
 impl std::fmt::Display for ResizeValue {
@@ -57,6 +111,8 @@ impl std::fmt::Display for ResizeValue {
             ResizeValue::Dimensions(Some(width), None) => f.write_fmt(format_args!("{width}w")),
             ResizeValue::Dimensions(None, Some(height)) => f.write_fmt(format_args!("{height}h")),
             ResizeValue::Dimensions(None, None) => f.write_fmt(format_args!("base")),
+            ResizeValue::LongestSide(side) => f.write_fmt(format_args!("{side}l")),
+            ResizeValue::ShortestSide(side) => f.write_fmt(format_args!("{side}s")),
         }
     }
 }
@@ -70,7 +126,16 @@ impl std::str::FromStr for ResizeValue {
         match s {
             s if s.starts_with('@') => Ok(Self::Multiplier(s[1..].parse()?)),
             s if s.ends_with('%') => Ok(Self::Percentage(s[..s.len() - 1].parse()?)),
-            s if s.contains('w') && s.contains('h') => Err(anyhow!("Invalid resize value")),
+            s if ANCHOR_MARKERS
+                .iter()
+                .filter(|marker| s.contains(**marker))
+                .count()
+                > 1 =>
+            {
+                Err(anyhow!(
+                    "Resize value can be anchored to only one of width, height, longest or shortest side"
+                ))
+            }
             s if s.contains('w') => {
                 let Some(cap) = WIDTH_RE.captures(&s) else {
                     return Err(anyhow!("Invalid resize value"));
@@ -85,6 +150,8 @@ impl std::str::FromStr for ResizeValue {
 
                 Ok(Self::Dimensions(None, Some(cap["height"].parse()?)))
             }
+            s if s.contains('l') => Ok(Self::LongestSide(parse_side(&s)?)),
+            s if s.contains('s') => Ok(Self::ShortestSide(parse_side(&s)?)),
             s if s.contains('x') => {
                 let dimensions: Vec<&str> = s.split('x').collect();
                 if dimensions.len() > 2 {
@@ -130,6 +197,12 @@ mod tests {
         assert_eq!(ResizeValue::Dimensions(Some(150), None).to_string(), "150w");
 
         assert_eq!(ResizeValue::Dimensions(None, None).to_string(), "base");
+
+        assert_eq!(ResizeValue::LongestSide(200).to_string(), "200l");
+        assert_eq!(ResizeValue::LongestSide(150).to_string(), "150l");
+
+        assert_eq!(ResizeValue::ShortestSide(200).to_string(), "200s");
+        assert_eq!(ResizeValue::ShortestSide(150).to_string(), "150s");
     }
 
     #[test]
@@ -204,8 +277,234 @@ mod tests {
             ResizeValue::Dimensions(None, Some(150))
         );
 
+        assert_eq!(
+            "200l".parse::<ResizeValue>().unwrap(),
+            ResizeValue::LongestSide(200)
+        );
+
+        assert_eq!(
+            "150l".parse::<ResizeValue>().unwrap(),
+            ResizeValue::LongestSide(150)
+        );
+
+        assert_eq!(
+            "200s".parse::<ResizeValue>().unwrap(),
+            ResizeValue::ShortestSide(200)
+        );
+
+        assert_eq!(
+            "150s".parse::<ResizeValue>().unwrap(),
+            ResizeValue::ShortestSide(150)
+        );
+
         assert!("_x_".parse::<ResizeValue>().is_err());
         assert!("150wh".parse::<ResizeValue>().is_err());
+    }
+
+    #[test]
+    fn from_str_side_accepts_same_shapes_as_width_and_height() {
+        // Whatever spelling works for `100w` should work for the side values too.
+        for value in ["200l", "200 l", "l200", "200L", "200 L", "L200"] {
+            assert_eq!(
+                value.parse::<ResizeValue>().unwrap(),
+                ResizeValue::LongestSide(200),
+                "failed to parse {value}"
+            );
+        }
+
+        for value in ["200s", "200 s", "s200", "200S", "200 S", "S200"] {
+            assert_eq!(
+                value.parse::<ResizeValue>().unwrap(),
+                ResizeValue::ShortestSide(200),
+                "failed to parse {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn from_str_side_rejects_zero() {
+        assert!("0l".parse::<ResizeValue>().is_err());
+        assert!("0s".parse::<ResizeValue>().is_err());
+    }
+
+    #[test]
+    fn from_str_side_rejects_missing_length() {
+        assert!("l".parse::<ResizeValue>().is_err());
+        assert!("s".parse::<ResizeValue>().is_err());
+    }
+
+    #[test]
+    fn from_str_rejects_multiple_anchors() {
+        for value in [
+            "150ls", "150wl", "150ws", "150hl", "150hs", "150wh", "150lw", "150sh",
+        ] {
+            assert!(
+                value.parse::<ResizeValue>().is_err(),
+                "{value} should not parse"
+            );
+        }
+    }
+
+    #[test]
+    fn from_str_still_accepts_values_without_anchors() {
+        // The anchor check runs before every dimension branch, so make sure it
+        // does not reject the values that carry no anchor marker at all.
+        assert_eq!(
+            "100x100".parse::<ResizeValue>().unwrap(),
+            ResizeValue::Dimensions(Some(100), Some(100))
+        );
+
+        assert_eq!(
+            "@2".parse::<ResizeValue>().unwrap(),
+            ResizeValue::Multiplier(2.)
+        );
+
+        assert_eq!(
+            "150%".parse::<ResizeValue>().unwrap(),
+            ResizeValue::Percentage(150.)
+        );
+    }
+
+    #[test]
+    fn display_round_trips_through_from_str() {
+        for value in [
+            ResizeValue::Multiplier(1.5),
+            ResizeValue::Percentage(150.),
+            ResizeValue::Dimensions(Some(100), Some(200)),
+            ResizeValue::Dimensions(Some(100), None),
+            ResizeValue::Dimensions(None, Some(200)),
+            ResizeValue::LongestSide(1000),
+            ResizeValue::ShortestSide(1000),
+        ] {
+            assert_eq!(
+                value.to_string().parse::<ResizeValue>().unwrap(),
+                value,
+                "{value} did not round trip"
+            );
+        }
+    }
+
+    #[test]
+    fn map_dimensions_longest_side() {
+        let resize_value = ResizeValue::LongestSide(100);
+
+        // Landscape anchors on the width, portrait on the height, and the
+        // result has the same longest side either way.
+        assert_eq!(resize_value.map_dimensions(1000, 500), (100, 50));
+        assert_eq!(resize_value.map_dimensions(500, 1000), (50, 100));
+        assert_eq!(resize_value.map_dimensions(800, 800), (100, 100));
+    }
+
+    #[test]
+    fn map_dimensions_shortest_side() {
+        let resize_value = ResizeValue::ShortestSide(100);
+
+        assert_eq!(resize_value.map_dimensions(1000, 500), (200, 100));
+        assert_eq!(resize_value.map_dimensions(500, 1000), (100, 200));
+        assert_eq!(resize_value.map_dimensions(800, 800), (100, 100));
+    }
+
+    #[test]
+    fn map_dimensions_side_upscales() {
+        assert_eq!(
+            ResizeValue::LongestSide(1000).map_dimensions(100, 50),
+            (1000, 500)
+        );
+
+        assert_eq!(
+            ResizeValue::ShortestSide(1000).map_dimensions(100, 50),
+            (2000, 1000)
+        );
+    }
+
+    #[test]
+    fn map_dimensions_side_is_a_noop_when_the_image_already_fits() {
+        // The pipeline skips the resize when the mapped size equals the source,
+        // so this is what makes an already correct image untouched.
+        assert_eq!(
+            ResizeValue::LongestSide(1000).map_dimensions(1000, 500),
+            (1000, 500)
+        );
+
+        assert_eq!(
+            ResizeValue::ShortestSide(500).map_dimensions(1000, 500),
+            (1000, 500)
+        );
+
+        assert_eq!(
+            ResizeValue::LongestSide(800).map_dimensions(800, 800),
+            (800, 800)
+        );
+    }
+
+    #[test]
+    fn map_dimensions_side_never_returns_zero() {
+        // Extreme aspect ratios truncate the derived side to zero, which the
+        // resize operation rejects outright.
+        assert_eq!(
+            ResizeValue::LongestSide(10).map_dimensions(1000, 3),
+            (10, 1)
+        );
+        assert_eq!(
+            ResizeValue::LongestSide(10).map_dimensions(3, 1000),
+            (1, 10)
+        );
+        assert_eq!(
+            ResizeValue::LongestSide(1).map_dimensions(1000, 1000),
+            (1, 1)
+        );
+    }
+
+    #[test]
+    fn map_dimensions_side_preserves_aspect_ratio() {
+        for (width, height) in [(1920, 1080), (1080, 1920), (640, 640), (3000, 2000)] {
+            for side in [50, 100, 512, 4000] {
+                for value in [
+                    ResizeValue::LongestSide(side),
+                    ResizeValue::ShortestSide(side),
+                ] {
+                    let (new_width, new_height) = value.map_dimensions(width, height);
+
+                    let source_ratio = width as f32 / height as f32;
+                    let result_ratio = new_width as f32 / new_height as f32;
+
+                    // Truncation moves the derived side by at most a pixel, so
+                    // compare with a tolerance scaled to the smaller result.
+                    let tolerance = source_ratio / new_width.min(new_height) as f32;
+
+                    assert!(
+                        (source_ratio - result_ratio).abs() <= tolerance,
+                        "{value} on {width}x{height} gave {new_width}x{new_height}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn map_dimensions_side_anchors_the_expected_side() {
+        for (width, height) in [(1920, 1080), (1080, 1920), (640, 640), (3000, 2000)] {
+            let (new_width, new_height) =
+                ResizeValue::LongestSide(512).map_dimensions(width, height);
+            assert_eq!(new_width.max(new_height), 512);
+
+            let (new_width, new_height) =
+                ResizeValue::ShortestSide(512).map_dimensions(width, height);
+            assert_eq!(new_width.min(new_height), 512);
+        }
+    }
+
+    #[test]
+    fn map_dimensions_side_leaves_degenerate_images_alone() {
+        assert_eq!(
+            ResizeValue::LongestSide(100).map_dimensions(0, 500),
+            (0, 500)
+        );
+        assert_eq!(
+            ResizeValue::ShortestSide(100).map_dimensions(500, 0),
+            (500, 0)
+        );
+        assert_eq!(ResizeValue::LongestSide(100).map_dimensions(0, 0), (0, 0));
     }
 
     #[test]
