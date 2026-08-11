@@ -33,7 +33,13 @@ impl Preprocessors for Command {
                     - 150%:    Adjust image size by this percentage
                     - 100x100: Resize image to Width×Height
                     - 100w:    Adjust image dimensions while maintaining the aspect ratio based on the width
-                    - 100h:    Adjust image dimensions while maintaining the aspect ratio based on the height"#})
+                    - 100h:    Adjust image dimensions while maintaining the aspect ratio based on the height
+                    - 100l:    Adjust image dimensions while maintaining the aspect ratio based on the longest side
+                    - 100s:    Adjust image dimensions while maintaining the aspect ratio based on the shortest side
+
+                    The longest and shortest side values pick the anchor per image, so a batch of
+                    mixed portrait and landscape images comes out at a consistent size. Combine them
+                    with --reduce-only or --enlarge-only to leave images that already fit untouched."#})
                     .value_parser(value_parser!(ResizeValue))
                     .action(ArgAction::Append),
 
@@ -49,10 +55,13 @@ impl Preprocessors for Command {
                     .overrides_with("no-downscale"),
                 #[cfg(feature = "resize")]
                 arg!(--"no-downscale" "Disable downscaling when resizing.")
-                    .long_help(indoc! {r#"Disable downscaling when resizing.
+                    .long_help(indoc! {r#"Disable downscaling when resizing. [aliases: --enlarge-only]
 
                     This is useful when you don't want to reduce the size of the image when it is larger than the specified size.
+                    Images that are already larger than the specified size are left untouched, so this is the enlarge only mode.
+                    Passing it together with --no-upscale leaves no direction to resize in, so every image keeps its original size.
                     It is recommended to use this option with --resize"#})
+                    .visible_alias("enlarge-only")
                     .action(ArgAction::SetTrue)
                     .requires("resize"),
 
@@ -68,10 +77,13 @@ impl Preprocessors for Command {
                     .overrides_with("no-upscale"),
                 #[cfg(feature = "resize")]
                 arg!(--"no-upscale" "Disable upscaling when resizing.")
-                    .long_help(indoc! {r#"Disable upscaling when resizing.
+                    .long_help(indoc! {r#"Disable upscaling when resizing. [aliases: --reduce-only]
 
                     This is useful when you don't want to increase the size of the image when it is smaller than the specified size.
+                    Images that are already smaller than the specified size are left untouched, so this is the reduce only mode.
+                    Passing it together with --no-downscale leaves no direction to resize in, so every image keeps its original size.
                     It is recommended to use this option with --resize"#})
+                    .visible_alias("reduce-only")
                     .action(ArgAction::SetTrue)
                     .requires("resize"),
 

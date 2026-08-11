@@ -113,7 +113,22 @@ rimage mozjpeg --resize 500x200 ./image.jpg
 
 # Resize by width, preserving aspect ratio (200h for height)
 rimage mozjpeg --resize 100w ./image.jpg
+
+# Resize by the longest side, preserving aspect ratio (1000s for the shortest side)
+# The anchor is chosen per image, so portrait and landscape images in the same
+# batch both end up with a 1000px longest side
+rimage mozjpeg --resize 1000l ./images
+
+# Shrink images above 1000px only, leaving anything already smaller untouched
+# --reduce-only is an alias for --no-upscale, --enlarge-only for --no-downscale
+rimage mozjpeg --resize 1000l --reduce-only ./images
+
+# Grow images below 1000px only, leaving anything already larger untouched
+rimage mozjpeg --resize 1000l --enlarge-only ./images
 ```
+
+> **Note**: Passing both `--reduce-only` and `--enlarge-only` leaves no direction to resize
+> in, so every image keeps its original size. The order of the two flags makes no difference.
 
 #### Quantization (color palette reduction)
 

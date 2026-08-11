@@ -12,6 +12,8 @@ All notable changes to the Rimage library will be documented in this file.
 ### Features
 
 - expand glob patterns in input paths on all platforms (previously Windows-only), preferring existing literal paths
+- add `100l` and `100s` resize values that anchor on the longest or shortest side of each image
+- add `--reduce-only` and `--enlarge-only` as aliases for `--no-upscale` and `--no-downscale`
 
 ### Bug Fixes
 
