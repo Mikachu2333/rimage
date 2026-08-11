@@ -106,12 +106,14 @@ pub fn operations(matches: &ArgMatches, img: &Image) -> BTreeMap<usize, Box<dyn 
 
             log::debug!("downscale: {downscale}, upscale: {upscale}");
 
-            let size = img.dimensions();
+            let mut size = img.dimensions();
 
             values
                 .into_iter()
                 .zip(matches.indices_of("resize").unwrap())
                 .for_each(|(value, idx)| {
+                    // Each value maps the size the previous resize left behind,
+                    // so a chain composes instead of every value mapping the source dimensions.
                     let (w, h) = value.map_dimensions(size.0, size.1);
                     log::trace!("setup resize {value} on index {idx}");
 
@@ -143,6 +145,8 @@ pub fn operations(matches: &ArgMatches, img: &Image) -> BTreeMap<usize, Box<dyn 
                                 .unwrap_or_default(),
                         )),
                     );
+
+                    size = (w, h);
                 })
         }
     }
@@ -709,25 +713,35 @@ mod tests {
     }
 
     #[test]
-    fn chained_resize_values_all_map_the_original_size() {
-        // Every value maps the source dimensions rather than the size the
-        // previous resize left behind, so the last value decides the result and
-        // the earlier ones are overwritten.
+    fn chained_resize_values_compose() {
+        // Each value maps the size the previous resize left behind, so the
+        // chain applies in order instead of every value mapping the source.
         assert_eq!(
             run(&["--resize", "100x400", "--resize", "200s"], 800, 400),
-            (2, (400, 200))
+            (2, (200, 800))
         );
 
         assert_eq!(
             run(&["--resize", "1000l", "--resize", "50%"], 800, 400),
-            (2, (400, 200))
+            (2, (500, 250))
         );
 
-        // Two side values land on the same target here only because both of
-        // them map the same source dimensions.
+        // The first resize already lands on the target the second one maps to,
+        // so the second is skipped as "already fits" instead of running twice.
         assert_eq!(
             run(&["--resize", "1000l", "--resize", "500s"], 800, 400),
-            (2, (1000, 500))
+            (1, (1000, 500))
+        );
+
+        // A skipped resize leaves the current size unchanged, so the next value
+        // maps the size the resize actually ran on.
+        assert_eq!(
+            run(
+                &["--resize", "2000l", "--resize", "50%", "--no-upscale"],
+                800,
+                400
+            ),
+            (1, (400, 200))
         );
     }
 

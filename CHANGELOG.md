@@ -18,6 +18,7 @@ All notable changes to the Rimage library will be documented in this file.
 ### Bug Fixes
 
 - reject malformed width and height `--resize` values such as `1.5w` or `abc100w` instead of silently extracting the first run of digits
+- map each chained `--resize` value from the size the previous resize left behind, so a chain composes instead of every value mapping the original dimensions
 - fix a deadlock with a single-threaded pool by acquiring the concurrency permit inside the worker, and return an error instead of panicking when the thread pool cannot be created
 - write outputs atomically through unique temporary files and publish them by rename, with a recoverable swap when replacing existing files on Windows
 - detect collisions before any processing: duplicate output mappings, outputs overwriting another input, metadata path conflicts, and output paths identical to `--backup` paths (path names are treated as case-insensitive on every platform as a fail-safe default, covering case-insensitive Linux mounts, and aliases are resolved through canonicalization for existing paths)
