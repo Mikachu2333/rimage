@@ -456,3 +456,286 @@ pub fn encoder(name: &str, matches: &ArgMatches) -> Result<AvailableEncoders, Im
         ))),
     }
 }
+
+#[cfg(all(test, feature = "resize"))]
+mod tests {
+    use zune_core::colorspace::ColorSpace;
+
+    use super::*;
+    use crate::cli::cli;
+
+    /// Builds the codec subcommand matches the way `main` passes them to [`operations`].
+    ///
+    /// `farbfeld` is used because it is the one codec that is never feature gated.
+    fn matches_from(args: &[&str]) -> ArgMatches {
+        cli()
+            .get_matches_from(args)
+            .subcommand()
+            .expect("clap ensures a subcommand is always provided")
+            .1
+            .clone()
+    }
+
+    fn test_image(width: usize, height: usize) -> Image {
+        Image::from_fn(width, height, ColorSpace::RGB, |x, y, px: &mut [u8; 4]| {
+            px[0] = x as u8;
+            px[1] = 0;
+            px[2] = y as u8;
+        })
+    }
+
+    /// Runs the preprocessing pipeline over an image of the given size.
+    ///
+    /// Reports how many resize operations were queued next to the resulting
+    /// dimensions, because "the image already fits" means none were queued at all.
+    fn run(resize_args: &[&str], width: usize, height: usize) -> (usize, (usize, usize)) {
+        let mut args = vec!["rimage", "farbfeld"];
+        args.extend_from_slice(resize_args);
+        args.push("image.ff");
+
+        let matches = matches_from(&args);
+        let mut img = test_image(width, height);
+
+        let ops = operations(&matches, &img);
+        let queued = ops.values().filter(|op| op.name() == "fast resize").count();
+
+        for op in ops.values() {
+            op.execute(&mut img).unwrap();
+        }
+
+        (queued, img.dimensions())
+    }
+
+    #[test]
+    fn longest_side_anchors_per_orientation() {
+        assert_eq!(run(&["--resize", "1000l"], 2000, 1000), (1, (1000, 500)));
+        assert_eq!(run(&["--resize", "1000l"], 1000, 2000), (1, (500, 1000)));
+        assert_eq!(run(&["--resize", "1000l"], 1600, 1600), (1, (1000, 1000)));
+    }
+
+    #[test]
+    fn shortest_side_anchors_per_orientation() {
+        assert_eq!(run(&["--resize", "500s"], 2000, 1000), (1, (1000, 500)));
+        assert_eq!(run(&["--resize", "500s"], 1000, 2000), (1, (500, 1000)));
+        assert_eq!(run(&["--resize", "500s"], 1600, 1600), (1, (500, 500)));
+    }
+
+    #[test]
+    fn side_value_is_skipped_when_the_image_already_fits_exactly() {
+        assert_eq!(run(&["--resize", "1000l"], 1000, 500), (0, (1000, 500)));
+        assert_eq!(run(&["--resize", "500s"], 1000, 500), (0, (1000, 500)));
+    }
+
+    #[test]
+    fn no_upscale_leaves_smaller_images_untouched() {
+        // The whole point of the flag pair: images already under the target
+        // keep their original size instead of being blown up to it.
+        assert_eq!(
+            run(&["--resize", "1000l", "--no-upscale"], 800, 400),
+            (0, (800, 400))
+        );
+
+        assert_eq!(
+            run(&["--resize", "500s", "--no-upscale"], 800, 400),
+            (0, (800, 400))
+        );
+    }
+
+    #[test]
+    fn no_upscale_still_shrinks_larger_images() {
+        assert_eq!(
+            run(&["--resize", "1000l", "--no-upscale"], 4000, 2000),
+            (1, (1000, 500))
+        );
+
+        assert_eq!(
+            run(&["--resize", "1000l", "--no-upscale"], 2000, 4000),
+            (1, (500, 1000))
+        );
+    }
+
+    #[test]
+    fn no_downscale_leaves_larger_images_untouched() {
+        assert_eq!(
+            run(&["--resize", "1000l", "--no-downscale"], 4000, 2000),
+            (0, (4000, 2000))
+        );
+
+        assert_eq!(
+            run(&["--resize", "500s", "--no-downscale"], 4000, 2000),
+            (0, (4000, 2000))
+        );
+    }
+
+    #[test]
+    fn no_downscale_still_enlarges_smaller_images() {
+        assert_eq!(
+            run(&["--resize", "1000l", "--no-downscale"], 800, 400),
+            (1, (1000, 500))
+        );
+
+        assert_eq!(
+            run(&["--resize", "1000l", "--no-downscale"], 400, 800),
+            (1, (500, 1000))
+        );
+    }
+
+    #[test]
+    fn a_mixed_batch_ends_up_with_a_consistent_longest_side() {
+        // This is the case `100w` cannot express: with a fixed width anchor the
+        // portrait images below would come out far taller than the landscape
+        // ones are wide.
+        for (width, height) in [(4000, 3000), (3000, 4000), (2000, 2000), (1200, 900)] {
+            let (_, (new_width, new_height)) = run(&["--resize", "1000l"], width, height);
+
+            assert_eq!(
+                new_width.max(new_height),
+                1000,
+                "{width}x{height} gave {new_width}x{new_height}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mixed_batch_ends_up_with_a_consistent_shortest_side() {
+        for (width, height) in [(4000, 3000), (3000, 4000), (2000, 2000), (1200, 900)] {
+            let (_, (new_width, new_height)) = run(&["--resize", "500s"], width, height);
+
+            assert_eq!(
+                new_width.min(new_height),
+                500,
+                "{width}x{height} gave {new_width}x{new_height}"
+            );
+        }
+    }
+
+    #[test]
+    fn shrink_only_batch_touches_only_oversized_images() {
+        // 1000l with --no-upscale is the shrink only mode from the feature
+        // request: everything ends up at or below 1000px, and anything that was
+        // already small keeps its exact original size.
+        let batch = [
+            ((4000, 3000), (1000, 750)),
+            ((3000, 4000), (750, 1000)),
+            ((800, 600), (800, 600)),
+            ((1000, 1000), (1000, 1000)),
+        ];
+
+        for ((width, height), expected) in batch {
+            let (_, dimensions) = run(&["--resize", "1000l", "--no-upscale"], width, height);
+
+            assert_eq!(dimensions, expected, "failed on {width}x{height}");
+        }
+    }
+
+    #[test]
+    fn reduce_only_is_an_alias_for_no_upscale() {
+        for (width, height) in [(4000, 2000), (800, 400), (1000, 500)] {
+            assert_eq!(
+                run(&["--resize", "1000l", "--reduce-only"], width, height),
+                run(&["--resize", "1000l", "--no-upscale"], width, height),
+                "--reduce-only diverged from --no-upscale on {width}x{height}"
+            );
+        }
+    }
+
+    #[test]
+    fn enlarge_only_is_an_alias_for_no_downscale() {
+        for (width, height) in [(4000, 2000), (800, 400), (1000, 500)] {
+            assert_eq!(
+                run(&["--resize", "1000l", "--enlarge-only"], width, height),
+                run(&["--resize", "1000l", "--no-downscale"], width, height),
+                "--enlarge-only diverged from --no-downscale on {width}x{height}"
+            );
+        }
+    }
+
+    #[test]
+    fn reduce_only_and_enlarge_only_pick_the_direction_their_names_promise() {
+        // Guards against the aliases being wired to the opposite flag, which is
+        // the whole risk of naming a double negative.
+        assert_eq!(
+            run(&["--resize", "1000l", "--reduce-only"], 4000, 2000),
+            (1, (1000, 500))
+        );
+        assert_eq!(
+            run(&["--resize", "1000l", "--reduce-only"], 800, 400),
+            (0, (800, 400))
+        );
+
+        assert_eq!(
+            run(&["--resize", "1000l", "--enlarge-only"], 800, 400),
+            (1, (1000, 500))
+        );
+        assert_eq!(
+            run(&["--resize", "1000l", "--enlarge-only"], 4000, 2000),
+            (0, (4000, 2000))
+        );
+    }
+
+    #[test]
+    fn width_anchor_with_reduce_caps_the_width_only() {
+        // Capping one dimension however long the other one is does not need a
+        // side value at all, the existing width anchor already covers it. The
+        // height follows the aspect ratio, and images at or under the cap keep
+        // their original size.
+        assert_eq!(
+            run(&["--resize", "400w", "--reduce-only"], 200, 100),
+            (0, (200, 100))
+        );
+        assert_eq!(
+            run(&["--resize", "400w", "--reduce-only"], 400, 2000),
+            (0, (400, 2000))
+        );
+        assert_eq!(
+            run(&["--resize", "400w", "--reduce-only"], 800, 900),
+            (1, (400, 450))
+        );
+    }
+
+    #[test]
+    fn disabling_both_directions_skips_every_resize() {
+        // Neither flag wins over the other, they both apply, which leaves no
+        // direction to resize in. The order they are passed does not matter.
+        for args in [
+            ["--resize", "1000l", "--no-upscale", "--no-downscale"],
+            ["--resize", "1000l", "--no-downscale", "--no-upscale"],
+            ["--resize", "1000l", "--reduce-only", "--enlarge-only"],
+        ] {
+            assert_eq!(run(&args, 4000, 2000), (0, (4000, 2000)));
+            assert_eq!(run(&args, 800, 400), (0, (800, 400)));
+            assert_eq!(run(&args, 1000, 500), (0, (1000, 500)));
+        }
+    }
+
+    #[test]
+    fn chained_resize_values_all_map_the_original_size() {
+        // Every value maps the source dimensions rather than the size the
+        // previous resize left behind, so the last value decides the result and
+        // the earlier ones are overwritten.
+        assert_eq!(
+            run(&["--resize", "100x400", "--resize", "200s"], 800, 400),
+            (2, (400, 200))
+        );
+
+        assert_eq!(
+            run(&["--resize", "1000l", "--resize", "50%"], 800, 400),
+            (2, (400, 200))
+        );
+
+        // Two side values land on the same target here only because both of
+        // them map the same source dimensions.
+        assert_eq!(
+            run(&["--resize", "1000l", "--resize", "500s"], 800, 400),
+            (2, (1000, 500))
+        );
+    }
+
+    #[test]
+    fn side_values_compose_with_the_filter_flag() {
+        assert_eq!(
+            run(&["--resize", "1000l", "--filter", "nearest"], 2000, 1000),
+            (1, (1000, 500))
+        );
+    }
+}
