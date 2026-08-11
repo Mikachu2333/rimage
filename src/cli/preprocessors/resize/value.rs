@@ -1,10 +1,4 @@
-use std::sync::LazyLock;
-
 use anyhow::anyhow;
-use regex::Regex;
-
-static WIDTH_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?P<width>\d+)").unwrap());
-static HEIGHT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?P<height>\d+)").unwrap());
 
 /// Markers that select which dimension a resize value is anchored to.
 /// Only one of them may appear in a single value.
@@ -81,30 +75,29 @@ fn scale_side(width: usize, height: usize, side: usize, anchor_is_width: bool) -
     }
 }
 
-/// Extracts the side length from a longest/shortest side value.
+/// Extracts the target length from a value anchored to one of the resize markers.
 ///
-/// The marker may sit on either end of the digits, the same spellings the width
-/// and height values accept, but nothing else may appear in the value. Pulling
-/// the first run of digits out of anything else would silently accept typos
-/// like `1.5l`, which would resize down to a single pixel.
+/// The marker may sit on either end of the digits, but nothing else may appear
+/// in the value. Pulling the first run of digits out of anything else would
+/// silently accept typos like `1.5w`, which would resize down to a single pixel.
 ///
 /// A zero length is rejected here rather than at resize time, because it can
 /// never produce a valid image and the error is clearer next to the input.
-fn parse_side(s: &str, marker: char) -> Result<usize, anyhow::Error> {
+fn parse_length(s: &str, marker: char) -> Result<usize, anyhow::Error> {
     let Some(digits) = s.strip_prefix(marker).or_else(|| s.strip_suffix(marker)) else {
         return Err(anyhow!("Invalid resize value"));
     };
 
-    let side: usize = digits
+    let length: usize = digits
         .trim()
         .parse()
         .map_err(|_| anyhow!("Invalid resize value"))?;
 
-    if side == 0 {
-        return Err(anyhow!("Side length should be greater than 0"));
+    if length == 0 {
+        return Err(anyhow!("Length should be greater than 0"));
     }
 
-    Ok(side)
+    Ok(length)
 }
 
 impl std::fmt::Display for ResizeValue {
@@ -143,22 +136,10 @@ impl std::str::FromStr for ResizeValue {
                     "Resize value can be anchored to only one of width, height, longest or shortest side"
                 ))
             }
-            s if s.contains('w') => {
-                let Some(cap) = WIDTH_RE.captures(&s) else {
-                    return Err(anyhow!("Invalid resize value"));
-                };
-
-                Ok(Self::Dimensions(Some(cap["width"].parse()?), None))
-            }
-            s if s.contains('h') => {
-                let Some(cap) = HEIGHT_RE.captures(&s) else {
-                    return Err(anyhow!("Invalid resize value"));
-                };
-
-                Ok(Self::Dimensions(None, Some(cap["height"].parse()?)))
-            }
-            s if s.contains('l') => Ok(Self::LongestSide(parse_side(&s, 'l')?)),
-            s if s.contains('s') => Ok(Self::ShortestSide(parse_side(&s, 's')?)),
+            s if s.contains('w') => Ok(Self::Dimensions(Some(parse_length(&s, 'w')?), None)),
+            s if s.contains('h') => Ok(Self::Dimensions(None, Some(parse_length(&s, 'h')?))),
+            s if s.contains('l') => Ok(Self::LongestSide(parse_length(&s, 'l')?)),
+            s if s.contains('s') => Ok(Self::ShortestSide(parse_length(&s, 's')?)),
             s if s.contains('x') => {
                 let dimensions: Vec<&str> = s.split('x').collect();
                 if dimensions.len() > 2 {
@@ -329,18 +310,40 @@ mod tests {
     }
 
     #[test]
-    fn from_str_side_rejects_zero() {
+    fn from_str_width_height_accept_marker_on_either_end() {
+        for value in ["200w", "200 w", "w200", "200W", "200 W", "W200"] {
+            assert_eq!(
+                value.parse::<ResizeValue>().unwrap(),
+                ResizeValue::Dimensions(Some(200), None),
+                "failed to parse {value}"
+            );
+        }
+
+        for value in ["200h", "200 h", "h200", "200H", "200 H", "H200"] {
+            assert_eq!(
+                value.parse::<ResizeValue>().unwrap(),
+                ResizeValue::Dimensions(None, Some(200)),
+                "failed to parse {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn from_str_rejects_zero_length() {
+        assert!("0w".parse::<ResizeValue>().is_err());
+        assert!("0h".parse::<ResizeValue>().is_err());
         assert!("0l".parse::<ResizeValue>().is_err());
         assert!("0s".parse::<ResizeValue>().is_err());
     }
 
     #[test]
-    fn from_str_side_rejects_anything_around_the_digits() {
-        // Taking the first run of digits out of the value would turn `1.5l`
+    fn from_str_rejects_anything_around_the_digits() {
+        // Taking the first run of digits out of the value would turn `1.5w`
         // into a single pixel image instead of an error.
         for value in [
             "1.5l", "1.5s", "200l300", "200s300", "abc200l", "200sfoo", "2 0 0 l", "200.l",
-            "200lol", "l200l",
+            "200lol", "l200l", "1.5w", "1.5h", "abc100w", "100w200", "w=100", "100h50", "100h200",
+            "h=100", "100w100", "2 0 0 w", "200.h", "w200w", "200ww",
         ] {
             assert!(
                 value.parse::<ResizeValue>().is_err(),
@@ -350,7 +353,9 @@ mod tests {
     }
 
     #[test]
-    fn from_str_side_rejects_missing_length() {
+    fn from_str_rejects_missing_length() {
+        assert!("w".parse::<ResizeValue>().is_err());
+        assert!("h".parse::<ResizeValue>().is_err());
         assert!("l".parse::<ResizeValue>().is_err());
         assert!("s".parse::<ResizeValue>().is_err());
     }
