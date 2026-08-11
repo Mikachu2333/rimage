@@ -2,6 +2,13 @@
 
 All notable changes to the Rimage library will be documented in this file.
 
+# Unreleased
+
+### Features
+
+- add `100l` and `100s` resize values that anchor on the longest or shortest side of each image ([#377](https://github.com/SalOne22/rimage/pull/377))
+- add `--reduce-only` and `--enlarge-only` as aliases for `--no-upscale` and `--no-downscale` ([#377](https://github.com/SalOne22/rimage/pull/377))
+
 # [0.12.4](https://github.com/SalOne22/rimage/compare/v0.12.3...v0.12.4) (2026-05-23)
 
 ### Features
