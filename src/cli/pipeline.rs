@@ -694,6 +694,44 @@ mod tests {
     }
 
     #[test]
+    fn disabling_both_directions_skips_every_resize() {
+        // Neither flag wins over the other, they both apply, which leaves no
+        // direction to resize in. The order they are passed does not matter.
+        for args in [
+            ["--resize", "1000l", "--no-upscale", "--no-downscale"],
+            ["--resize", "1000l", "--no-downscale", "--no-upscale"],
+            ["--resize", "1000l", "--reduce-only", "--enlarge-only"],
+        ] {
+            assert_eq!(run(&args, 4000, 2000), (0, (4000, 2000)));
+            assert_eq!(run(&args, 800, 400), (0, (800, 400)));
+            assert_eq!(run(&args, 1000, 500), (0, (1000, 500)));
+        }
+    }
+
+    #[test]
+    fn chained_resize_values_all_map_the_original_size() {
+        // Every value maps the source dimensions rather than the size the
+        // previous resize left behind, so the last value decides the result and
+        // the earlier ones are overwritten.
+        assert_eq!(
+            run(&["--resize", "100x400", "--resize", "200s"], 800, 400),
+            (2, (400, 200))
+        );
+
+        assert_eq!(
+            run(&["--resize", "1000l", "--resize", "50%"], 800, 400),
+            (2, (400, 200))
+        );
+
+        // Two side values land on the same target here only because both of
+        // them map the same source dimensions.
+        assert_eq!(
+            run(&["--resize", "1000l", "--resize", "500s"], 800, 400),
+            (2, (1000, 500))
+        );
+    }
+
+    #[test]
     fn side_values_compose_with_the_filter_flag() {
         assert_eq!(
             run(&["--resize", "1000l", "--filter", "nearest"], 2000, 1000),
