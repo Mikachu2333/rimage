@@ -87,6 +87,19 @@ rimage mozjpeg --backup ./image.jpg
 rimage mozjpeg -d ./output -r ./inner/image.jpg ./image.jpg
 ```
 
+### File lists
+
+To process many images without a long command line, create a UTF-8 text file named `file.list`
+with one input file per line and pass it as an input:
+
+```sh
+rimage mozjpeg file.list
+```
+
+Blank lines are skipped, surrounding whitespace is ignored, and relative paths are resolved
+against the current working directory. Glob patterns are supported on each line. When a
+`file.list` is provided, all other input file arguments are ignored.
+
 ### Preprocessing
 
 Rimage supports a preprocessing pipeline: resize, color quantization, and alpha premultiply

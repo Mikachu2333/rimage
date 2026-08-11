@@ -227,3 +227,49 @@ fn exit_code_is_nonzero_when_a_file_fails() {
     );
     let _ = std::fs::remove_dir_all(&out);
 }
+
+/// A `file.list` input is expanded into the files it lists, one per line, and
+/// any other input arguments are ignored.
+#[test]
+fn file_list_expands_to_its_listed_inputs() {
+    let exe = env!("CARGO_BIN_EXE_rimage");
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    let source = format!("{manifest}/tests/files/jpg/f1t.jpg");
+    let input_dir = format!("{manifest}/target/tmp-file-list-input");
+    let first = format!("{input_dir}/first.jpg");
+    let second = format!("{input_dir}/second.jpg");
+    let ignored = format!("{input_dir}/ignored.jpg");
+    let list = format!("{input_dir}/file.list");
+    let out = format!("{manifest}/target/tmp-file-list-test");
+    let _ = std::fs::remove_dir_all(&input_dir);
+    let _ = std::fs::remove_dir_all(&out);
+    std::fs::create_dir_all(&input_dir).unwrap();
+    std::fs::copy(&source, &first).unwrap();
+    std::fs::copy(&source, &second).unwrap();
+    std::fs::copy(&source, &ignored).unwrap();
+    std::fs::write(&list, format!("{first}\n{second}\n")).unwrap();
+    std::fs::create_dir_all(&out).unwrap();
+
+    let status = Command::new(exe)
+        .args(["png", &list, &ignored, "-d", &out, "--quiet"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+
+    assert!(status.success(), "rimage exited with {status}");
+    assert!(
+        std::path::Path::new(&out).join("first.png").exists(),
+        "expected output under {out}/first.png"
+    );
+    assert!(
+        std::path::Path::new(&out).join("second.png").exists(),
+        "expected output under {out}/second.png"
+    );
+    assert!(
+        !std::path::Path::new(&out).join("ignored.png").exists(),
+        "other input arguments must be ignored when file.list is provided"
+    );
+    let _ = std::fs::remove_dir_all(&input_dir);
+    let _ = std::fs::remove_dir_all(&out);
+}
