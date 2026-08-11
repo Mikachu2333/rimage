@@ -7,11 +7,11 @@ All notable changes to the Rimage library will be documented in this file.
 ### Breaking Changes
 
 - append the output suffix directly WITHOUT an automatic `@` separator (`-s 2x` now yields `file2x.jpeg`) and update the CLI help accordingly
+- accept a UTF-8 `file.list` as an input file list, with one file path per line (blank lines are skipped, surrounding whitespace is ignored, and relative paths are resolved against the current working directory); when a `file.list` is provided, all other input file arguments are ignored
 
 ### Features
 
 - expand glob patterns in input paths on all platforms (previously Windows-only), preferring existing literal paths
-- accept a UTF-8 `file.list` as an input file list, with one file path per line (blank lines are skipped, surrounding whitespace is ignored, and relative paths are resolved against the current working directory); when a `file.list` is provided, all other input file arguments are ignored
 
 ### Bug Fixes
 
