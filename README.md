@@ -107,28 +107,80 @@ run before encoding. Operations execute in CLI argument order.
 
 #### Resize
 
+`--resize` accepts one of the following value forms. Unless a fixed `WxH` is
+given, the aspect ratio is preserved:
+
+| Form  | Meaning                                                     | Example   | Result on 800x400 |
+| ----- | ----------------------------------------------------------- | --------- | ----------------- |
+| `WxH` | Fixed width and height, aspect ratio is not preserved       | `100x300` | `100x300`         |
+| `Ww`  | Anchor on the width, height follows the aspect ratio        | `100w`    | `100x50`          |
+| `hH`  | Anchor on the height, width follows the aspect ratio        | `200h`    | `400x200`         |
+| `Ll`  | Longest side becomes `L`, the other side follows            | `1000l`   | `1000x500`        |
+| `Ss`  | Shortest side becomes `S`, the other side follows           | `500s`    | `1000x500`        |
+| `@M`  | Scale by the multiplier `M`                                 | `@1.5`    | `1200x600`        |
+| `P%`  | Scale to `P` percent of the source                          | `50%`     | `400x200`         |
+
 ```sh
-# Resize to fixed dimensions
-rimage mozjpeg --resize 500x200 ./image.jpg
+# Fixed dimensions: the image is resized to exactly 100x200
+rimage mozjpeg --resize 100x200 ./image.jpg     # 800x400 -> 100x200
 
-# Resize by width, preserving aspect ratio (200h for height)
-rimage mozjpeg --resize 100w ./image.jpg
+# Anchor on one side, the other side follows the aspect ratio
+rimage mozjpeg --resize 100w ./image.jpg        # 800x400 -> 100x50
+rimage mozjpeg --resize 200h ./image.jpg        # 800x400 -> 400x200
 
-# Resize by the longest side, preserving aspect ratio (1000s for the shortest side)
-# The anchor is chosen per image, so portrait and landscape images in the same
-# batch both end up with a 1000px longest side
-rimage mozjpeg --resize 1000l ./images
+# Longest / shortest side: the anchor is chosen per image, so portrait and
+# landscape images in the same batch end up with a consistent size
+rimage mozjpeg --resize 1000l ./landscape.jpg   # 800x400 -> 1000x500
+rimage mozjpeg --resize 1000l ./portrait.jpg    # 400x800 -> 500x1000
+rimage mozjpeg --resize 500s ./landscape.jpg    # 800x400 -> 1000x500
+rimage mozjpeg --resize 500s ./portrait.jpg     # 400x800 -> 500x1000
 
-# Shrink images above 1000px only, leaving anything already smaller untouched
-# --reduce-only is an alias for --no-upscale, --enlarge-only for --no-downscale
-rimage mozjpeg --resize 1000l --reduce-only ./images
+# Multiplier and percentage
+rimage mozjpeg --resize @2 ./image.jpg          # 800x400 -> 1600x800
+rimage mozjpeg --resize @0.5 ./image.jpg        # 800x400 -> 400x200
+rimage mozjpeg --resize 50% ./image.jpg         # 800x400 -> 400x200
+rimage mozjpeg --resize 150% ./image.jpg        # 800x400 -> 1200x600
+```
 
-# Grow images below 1000px only, leaving anything already larger untouched
-rimage mozjpeg --resize 1000l --enlarge-only ./images
+Passing `--resize` several times chains the values. Each value maps the size
+the previous resize produced, so the order of the values matters:
+
+```sh
+# 100x400 first, then the shortest side of that intermediate result
+rimage mozjpeg --resize 100x400 --resize 200s ./image.jpg   # 800x400 -> 200x800
+
+# Longest side first, then half of the intermediate result
+rimage mozjpeg --resize 1000l --resize 50% ./image.jpg      # 800x400 -> 500x250
+```
+
+The direction flags restrict each resize step to shrinking or growing only.
+`--reduce-only` is an alias for `--no-upscale` (never grow) and `--enlarge-only`
+is an alias for `--no-downscale` (never shrink):
+
+```sh
+# Shrink images whose longest side is above 1000px, leave the rest untouched
+rimage mozjpeg --resize 1000l --reduce-only ./small.jpg     # 800x400 -> 800x400
+rimage mozjpeg --resize 1000l --reduce-only ./big.jpg       # 2000x1000 -> 1000x500
+
+# Grow images whose longest side is below 1000px, leave the rest untouched
+rimage mozjpeg --resize 1000l --enlarge-only ./small.jpg    # 800x400 -> 1000x500
+rimage mozjpeg --resize 1000l --enlarge-only ./big.jpg      # 2000x1000 -> 2000x1000
+
+# A step that is not allowed by the flags is skipped, and the chain continues
+# from the size the image actually has
+rimage mozjpeg --resize 2000l --resize 50% --reduce-only ./image.jpg  # 800x400 -> 400x200
 ```
 
 > **Note**: Passing both `--reduce-only` and `--enlarge-only` leaves no direction to resize
 > in, so every image keeps its original size. The order of the two flags makes no difference.
+
+`--filter` selects the resampling filter applied to every `--resize` step
+(default `lanczos3`). Available filters: `nearest`, `box`, `bilinear`,
+`hamming`, `catmull-rom`, `mitchell`, `lanczos3`.
+
+```sh
+rimage mozjpeg --resize 1000l --filter nearest ./image.jpg
+```
 
 #### Quantization (color palette reduction)
 
