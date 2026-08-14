@@ -37,6 +37,7 @@ All notable changes to the Rimage library will be documented in this file.
 - write JSON metadata atomically and use saturating arithmetic for size and space-saved statistics
 - add end-to-end regression tests covering single-thread processing, recursive output layouts, backup collisions, existing-backup protection and non-zero exit codes
 - regenerate the AVIF test fixture
+- update install steps of dependencies for building on Windows
 
 ### Dependencies
 
