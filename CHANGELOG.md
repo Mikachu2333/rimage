@@ -2,7 +2,7 @@
 
 All notable changes to the Rimage library will be documented in this file.
 
-# 0.13.0
+# [0.13.0](https://github.com/SalOne22/rimage/compare/v0.12.4...v0.13.0) (2026-08-14)
 
 ### Breaking Changes
 
