@@ -142,7 +142,6 @@ fn validate_output_file_name(name: &OsStr) -> Result<(), String> {
             .to_str()
             .ok_or_else(|| "Output file name is not valid Unicode on Windows".to_string())?;
         if text.is_empty()
-            || text.ends_with([' ', '.'])
             || text.chars().any(|c| {
                 c <= '\u{1f}' || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
             })

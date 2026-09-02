@@ -100,7 +100,9 @@ impl OperationsTrait for ApplyICC {
                     let mut bytes = frame.u16_to_native_endian();
                     t.transform_in_place(&mut bytes);
                     let samples = bytes
-                        .chunks_exact(2)
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
                         .map(|sample| u16::from_ne_bytes([sample[0], sample[1]]))
                         .collect::<Vec<_>>();
                     *frame = Frame::from_u16(&samples, colorspace, numerator, denominator);
