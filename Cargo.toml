@@ -1,6 +1,6 @@
 [package]
 name          = "rimage"
-version       = "0.13.0"
+version       = "0.13.0-2"
 edition       = "2024"
 rust-version  = "1.88.0"
 description   = "Optimize images natively with best-in-class codecs"
