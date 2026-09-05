@@ -99,7 +99,9 @@ console = ["dep:console"]
 
 [dependencies]
 log = "0.4"
-zune-core = { version = "0.5.1", features = ["std"] }
+# zune-core 0.5.3 would cause build error.
+# REF: https://github.com/etemesi254/zune-image/issues/439
+zune-core = { version = "=0.5.1", features = ["std"] }
 zune-image = { version = "0.5.0", features = ["simd"] }
 fast_image_resize = { version = "6.1", optional = true }
 imagequant = { version = "4.4", default-features = false, optional = true }
@@ -124,7 +126,7 @@ resvg = { version = "0.48.1", default-features = false, features = [
     "system-fonts",
     "raster-images",
 ], optional = true }
-skrifa = { version = "0.44", default-features = false, features = [
+skrifa = { version = "0.46.2", default-features = false, features = [
     "std",
 ], optional = true }
 
