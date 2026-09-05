@@ -2,6 +2,7 @@
 name          = "rimage"
 version       = "0.13.0"
 edition       = "2024"
+rust-version  = "1.87.0"
 description   = "Optimize images natively with best-in-class codecs"
 license       = "MIT OR Apache-2.0"
 readme        = "README.md"
@@ -41,6 +42,7 @@ default = [
     "webp",
     "avif",
     "tiff",
+    "svg",
     "threads",
     "metadata",
 ]
@@ -90,6 +92,8 @@ webp = ["dep:webp"]
 avif = ["dep:ravif", "dep:libavif", "dep:rgb"]
 # Enables tiff codec
 tiff    = ["dep:tiff"]
+# Enables SVG input support (rendered via resvg)
+svg     = ["dep:resvg"]
 icc     = ["dep:lcms2"]
 console = ["dep:console"]
 
@@ -114,6 +118,11 @@ libavif = { version = "0.14.0", default-features = false, features = [
 lcms2 = { version = "6.1", optional = true }
 tiff = { version = "0.11.3", default-features = false, features = [
     "lzw",
+], optional = true }
+resvg = { version = "0.47.0", default-features = false, features = [
+    "text",
+    "system-fonts",
+    "raster-images",
 ], optional = true }
 
 # cli
