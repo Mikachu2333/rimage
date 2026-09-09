@@ -87,6 +87,25 @@ rimage mozjpeg --backup ./image.jpg
 rimage mozjpeg -d ./output -r ./inner/image.jpg ./image.jpg
 ```
 
+### Color fidelity and chroma subsampling
+
+`rimage mozjpeg` lets MozJPEG choose the chroma subsampling automatically. At
+typical quality levels it picks **2x2 (4:2:0)**, which discards three quarters
+of the chroma resolution to make the file smaller. A side effect is that highly
+saturated colors (for example a bright red) can come out visibly darker or
+duller than the original.
+
+If color fidelity matters more than file size, force 4:4:4 with:
+
+```sh
+rimage mozjpeg --subsample 1 ./image.jpg
+```
+
+`1` means 4:4:4 (no chroma subsampling), `2` means 4:2:0. The default
+quantization table is `NRobidoux`; if you are comparing output with tools that
+use the standard Annex K tables (such as ImageMagick), pass
+`--qtable AnnexK` to make the comparison closer.
+
 ### File lists
 
 To process many images without a long command line, create a UTF-8 text file named `file.list`
