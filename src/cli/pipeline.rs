@@ -3,6 +3,7 @@ use std::{collections::BTreeMap, fs::File, io::Read, path::Path};
 
 #[cfg(feature = "resize")]
 use crate::cli::preprocessors::ResizeValue;
+use crate::cli::utils::jpeg::JfifDensity;
 use clap::ArgMatches;
 #[cfg(feature = "avif")]
 use rimage::codecs::avif::AvifEncoder;
@@ -389,6 +390,36 @@ impl AvailableEncoders {
             AvailableEncoders::Png(_) => "png",
             AvailableEncoders::Ppm(_) => "ppm",
             AvailableEncoders::Qoi(_) => "qoi",
+        }
+    }
+
+    pub fn set_jfif_density(&mut self, density: Option<JfifDensity>) {
+        #[cfg(feature = "mozjpeg")]
+        {
+            let Some(density) = density else {
+                return;
+            };
+
+            if let AvailableEncoders::MozJpeg(encoder) = self {
+                use mozjpeg::{PixelDensity, PixelDensityUnit};
+
+                let unit = match density.unit {
+                    0 => PixelDensityUnit::PixelAspectRatio,
+                    1 => PixelDensityUnit::Inches,
+                    2 => PixelDensityUnit::Centimeters,
+                    _ => return,
+                };
+
+                encoder.set_pixel_density(PixelDensity {
+                    unit,
+                    x: density.x_density,
+                    y: density.y_density,
+                });
+            }
+        }
+        #[cfg(not(feature = "mozjpeg"))]
+        {
+            let _ = density;
         }
     }
 
