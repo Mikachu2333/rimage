@@ -456,7 +456,7 @@ pub fn encoder(name: &str, matches: &ArgMatches) -> Result<AvailableEncoders, Im
                     .unwrap_or("ycbcr")
                 {
                     "ycbcr" => mozjpeg::ColorSpace::JCS_YCbCr,
-                    "rgb" => mozjpeg::ColorSpace::JCS_EXT_RGB,
+                    "rgb" => mozjpeg::ColorSpace::JCS_RGB,
                     "grayscale" => mozjpeg::ColorSpace::JCS_GRAYSCALE,
                     cs => {
                         return Err(ImageErrors::GenericString(format!(
