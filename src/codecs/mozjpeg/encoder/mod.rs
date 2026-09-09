@@ -35,6 +35,7 @@ pub struct MozJpegOptions {
 #[derive(Default)]
 pub struct MozJpegEncoder {
     options: MozJpegOptions,
+    pixel_density: Option<mozjpeg::PixelDensity>,
 }
 
 struct TempVt<T: ZByteWriterTrait> {
@@ -92,7 +93,19 @@ impl MozJpegEncoder {
 
     /// Create a new encoder with specified options
     pub fn new_with_options(options: MozJpegOptions) -> MozJpegEncoder {
-        MozJpegEncoder { options }
+        MozJpegEncoder {
+            options,
+            pixel_density: None,
+        }
+    }
+
+    /// Set the JFIF pixel density written into the encoded JPEG.
+    ///
+    /// When this is not called, mozjpeg writes its default 1x1 aspect-ratio
+    /// JFIF header, which shows up as X/Y Resolution 1 and Resolution Unit
+    /// None in tools like ExifTool.
+    pub fn set_pixel_density(&mut self, density: mozjpeg::PixelDensity) {
+        self.pixel_density = Some(density);
     }
 }
 
@@ -203,6 +216,10 @@ impl EncoderTrait for MozJpegEncoder {
 
             if let Some(qtable) = chroma_qtable {
                 comp.set_chroma_qtable(qtable)
+            }
+
+            if let Some(density) = self.pixel_density.take() {
+                comp.set_pixel_density(density);
             }
 
             let writer = TempVt {

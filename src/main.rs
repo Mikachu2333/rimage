@@ -14,7 +14,10 @@ use std::{
 use cli::{
     cli,
     pipeline::{decode, operations},
-    utils::paths::{expand_file_lists, get_paths, paths_equivalent},
+    utils::{
+        jpeg::{insert_jpeg_exif_app1, read_jpeg_source_metadata},
+        paths::{expand_file_lists, get_paths, paths_equivalent},
+    },
 };
 use console::{Term, style};
 use indicatif::{DecimalBytes, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
@@ -830,11 +833,60 @@ fn main() -> std::process::ExitCode {
                             });
 
                         let mut img = handle_error!(input, decode(&input, matches));
-                        let exif_metadata: Option<ExifMetadata> = ExifMetadata::new_from_path(&input)
-                            .ok()
-                            .filter(|_| {
-                                !strip_metadata && SUPPORTS_EXIF.contains(&subcommand)
-                            });
+
+                        // Preserve JPEG metadata directly from the source file.
+                        // EXIF is copied as a raw APP1 segment instead of being
+                        // decoded and re-encoded: little_exif rejects valid JPEGs
+                        // that store ExifVersion as STRING rather than UNDEF.
+                        let jpeg_source_metadata = if strip_metadata {
+                            None
+                        } else {
+                            match read_jpeg_source_metadata(&input) {
+                                Ok(metadata) => metadata,
+                                Err(error) => {
+                                    log::warn!(
+                                        "{}: failed to read source JPEG metadata: {error}",
+                                        input.display()
+                                    );
+                                    None
+                                }
+                            }
+                        };
+
+                        let (jfif_density, raw_exif_app1, source_is_jpeg) =
+                            match jpeg_source_metadata {
+                                Some(metadata) => (
+                                    metadata.jfif_density,
+                                    metadata.exif_app1,
+                                    true,
+                                ),
+                                None => (None, None, false),
+                            };
+
+                        let exif_metadata: Option<ExifMetadata> = if source_is_jpeg
+                            || strip_metadata
+                            || !SUPPORTS_EXIF.contains(&subcommand)
+                        {
+                            None
+                        } else {
+                            match ExifMetadata::new_from_path(&input) {
+                                Ok(metadata) => Some(metadata),
+                                Err(error)
+                                    if error
+                                        .to_string()
+                                        .contains("No EXIF data found") =>
+                                {
+                                    None
+                                }
+                                Err(error) => {
+                                    log::warn!(
+                                        "{}: failed to read EXIF metadata: {error}",
+                                        input.display()
+                                    );
+                                    None
+                                }
+                            }
+                        };
 
                         pb.set_style(sty_aux_operations.clone());
 
@@ -853,6 +905,8 @@ fn main() -> std::process::ExitCode {
                         let mut available_encoder =
                             handle_error!(input, encoder(subcommand, matches));
                         let output_format = available_encoder.to_extension().to_string();
+
+                        available_encoder.set_jfif_density(jfif_density);
 
                         if strip_metadata || !SUPPORTS_ICC.contains(&subcommand) {
                             ops.push(Box::new(ApplySRGB));
@@ -889,6 +943,15 @@ fn main() -> std::process::ExitCode {
                             handle_error!(output, TemporaryOutput::new(&output));
 
                         handle_error!(output, available_encoder.encode(&img, output_file));
+
+                        if output_format == "jpg" {
+                            if let Some(raw_exif) = raw_exif_app1 {
+                                handle_error!(
+                                    temporary.path,
+                                    insert_jpeg_exif_app1(&temporary.path, &raw_exif)
+                                );
+                            }
+                        }
 
                         if let Some(actual_metadata) = exif_metadata {
                             handle_error!(
