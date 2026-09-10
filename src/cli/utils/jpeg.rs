@@ -79,42 +79,37 @@ pub fn read_jpeg_source_metadata(path: &Path) -> io::Result<Option<JpegSourceMet
         }
         let remaining = segment_len - 2;
 
+        // The `is_none()` guards keep the first copy of each segment. A second
+        // one falls through to `_`, which skips it without reading.
         match marker {
             // APP0: JFIF density lives here.
-            0xE0 => {
-                if metadata.jfif_density.is_none() {
-                    let mut prefix = [0u8; 14];
-                    let read = read_up_to(&mut reader, &mut prefix, remaining)?;
-                    if read >= 14 && prefix.starts_with(b"JFIF\0") {
-                        metadata.jfif_density = Some(JfifDensity {
-                            unit: prefix[7],
-                            x_density: u16::from_be_bytes([prefix[8], prefix[9]]),
-                            y_density: u16::from_be_bytes([prefix[10], prefix[11]]),
-                        });
-                    }
-                    skip_remaining(&mut reader, remaining, read)?;
-                } else {
-                    skip_remaining(&mut reader, remaining, 0)?;
+            0xE0 if metadata.jfif_density.is_none() => {
+                let mut prefix = [0u8; 14];
+                let read = read_up_to(&mut reader, &mut prefix, remaining)?;
+                if read >= 14 && prefix.starts_with(b"JFIF\0") {
+                    metadata.jfif_density = Some(JfifDensity {
+                        unit: prefix[7],
+                        x_density: u16::from_be_bytes([prefix[8], prefix[9]]),
+                        y_density: u16::from_be_bytes([prefix[10], prefix[11]]),
+                    });
                 }
+                skip_remaining(&mut reader, remaining, read)?;
             }
             // APP1: the first EXIF segment is the one to preserve.
-            0xE1 => {
-                if metadata.exif_app1.is_none() {
-                    let mut prefix = [0u8; 6];
-                    let read = read_up_to(&mut reader, &mut prefix, remaining)?;
-                    if read >= 6 && prefix.starts_with(b"Exif\0\0") {
-                        let mut payload = Vec::with_capacity(remaining);
-                        payload.extend_from_slice(&prefix);
-                        payload.resize(remaining, 0);
-                        reader.read_exact(&mut payload[6..])?;
-                        metadata.exif_app1 = Some(payload);
-                    } else {
-                        skip_remaining(&mut reader, remaining, read)?;
-                    }
+            0xE1 if metadata.exif_app1.is_none() => {
+                let mut prefix = [0u8; 6];
+                let read = read_up_to(&mut reader, &mut prefix, remaining)?;
+                if read >= 6 && prefix.starts_with(b"Exif\0\0") {
+                    let mut payload = Vec::with_capacity(remaining);
+                    payload.extend_from_slice(&prefix);
+                    payload.resize(remaining, 0);
+                    reader.read_exact(&mut payload[6..])?;
+                    metadata.exif_app1 = Some(payload);
                 } else {
-                    skip_remaining(&mut reader, remaining, 0)?;
+                    skip_remaining(&mut reader, remaining, read)?;
                 }
             }
+            // Every other segment, and any repeat of one already collected.
             _ => {
                 skip_remaining(&mut reader, remaining, 0)?;
             }
