@@ -126,5 +126,13 @@ pub mod operations;
 /// All additional codecs for the zune_image
 pub mod codecs;
 
+/// Runtime-derived image size limits.
+///
+/// Deciding whether an image is too large to process is a property of the
+/// machine, not of the source code, so the ceiling is derived from the format's
+/// own published limits intersected with the memory actually available. See
+/// [`limits::SystemBudget`] and [`limits::LimitSet`].
+pub mod limits;
+
 #[cfg(test)]
 mod test_utils;
