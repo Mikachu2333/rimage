@@ -155,7 +155,16 @@ fn picture_to_rgba(
         ));
     }
 
-    let mut rgba = vec![0u8; width * height * 4];
+    let rgba_len = width
+        .checked_mul(height)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| {
+            ImageErrors::ImageDecodeErrors(
+                "avif: decoded dimensions overflow the output buffer size".into(),
+            )
+        })?;
+
+    let mut rgba = vec![0u8; rgba_len];
 
     if color.matrix_coefficients() == MatrixCoefficients::Identity {
         identity_planes_to_rgba(color, &mut rgba);
@@ -441,6 +450,12 @@ impl Planes<'_> {
             Sample::V => (self.v, self.v_stride),
         };
         let offset = y * stride + x * 2;
+        // Bounds-check the 2-byte sample: if the plane is shorter than
+        // expected (corrupted bitstream or mismatched stride), return 0
+        // rather than panicking across the FFI boundary.
+        if offset + 2 > plane.len() {
+            return 0;
+        }
         u16::from_le_bytes([plane[offset], plane[offset + 1]])
     }
 }
@@ -564,8 +579,15 @@ fn used_bits(picture: &Picture) -> Result<usize, ImageErrors> {
 }
 
 /// Reads a little-endian sample and scales it down to 8 bits.
+///
+/// Returns 0 when the slice is too short to hold a full 2-byte sample, which
+/// can happen with a corrupted bitstream or mismatched stride. Returning a
+/// neutral value is safer than panicking across the dav1d FFI boundary.
 fn sample_u8(bytes: &[u8], used: usize) -> u8 {
-    let value = u16::from_le_bytes([bytes[0], bytes[1]]) as u32;
+    let Some(arr) = bytes.get(..2) else {
+        return 0;
+    };
+    let value = u16::from_le_bytes([arr[0], arr[1]]) as u32;
     let max = ((1u32 << used) - 1).max(1);
     ((value * 255 + max / 2) / max) as u8
 }
