@@ -443,7 +443,6 @@ pub fn input_config_error(
 /// requirements; `classify_input` already handles the resize-specific case.
 pub fn input_operation_error(path: &Path, error: &ImageErrors) -> RimageError {
     classify_input(path, error, None)
-        .expect("classify_input always returns Some for any ImageErrors variant")
 }
 
 /// Build a hint naming the violated ceiling and a size that would fit.
@@ -665,14 +664,15 @@ impl std::error::Error for RimageError {
 /// Classify something that went wrong while reading `path`.
 ///
 /// `format` is resolved from the file extension, so the message can name it
-/// even when the decoder could not get far enough to report one. Returns `None`
-/// only if `path` is not a file we know how to describe, which lets callers
-/// fall back to printing the original error unchanged.
+/// even when the decoder could not get far enough to report one. Every
+/// [`ImageErrors`] variant maps onto a structured input failure — unknown
+/// ones become [`InputError::Decode`] with the original text preserved — so
+/// the result is the error itself, not an `Option`.
 pub fn classify_input(
     path: &Path,
     error: &ImageErrors,
     resize: Option<(&'static str, (u64, u64))>,
-) -> Option<RimageError> {
+) -> RimageError {
     let format = path
         .extension()
         .and_then(|ext| ext.to_str())
@@ -722,7 +722,7 @@ pub fn classify_input(
         ImageErrors::ImageOperationNotImplemented(operation, _) if *operation == "resize" => {
             // Without the caller's context there is nothing to say beyond "the
             // resize failed", so fall through to a decode error rather than
-            // returning `None`, which would lose the error at the call site.
+            // dropping the failure's format tag and hint.
             match resize {
                 Some((reason, requested)) => RimageError::Input(InputError::InvalidResize {
                     requested,
@@ -742,7 +742,7 @@ pub fn classify_input(
         }),
     };
 
-    Some(error)
+    error
 }
 
 /// Classify something that went wrong while writing `path`.

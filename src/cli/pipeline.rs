@@ -682,32 +682,7 @@ fn decode_with_fallback(
 fn classify_decode_failure(
     path: &Path, _matches: &ArgMatches, error: &ImageErrors,
 ) -> rimage::error::RimageError {
-    use rimage::error::{InputError, RimageError, classify_input};
-
-    classify_input(path, error, None).unwrap_or_else(|| {
-        RimageError::Input(InputError::Decode {
-            path: path.to_path_buf(),
-            format: rimage::limits::ImageFormatId::from_extension(
-                path.extension()
-                    .and_then(|ext| ext.to_str())
-                    .unwrap_or_default(),
-            ),
-            cause: clone_for_report(error),
-        })
-    })
-}
-
-/// Rebuild an [`ImageErrors`] so it can be stored in a reported error.
-///
-/// `ImageErrors` has no `Clone`, and the message only ever renders it, so the
-/// text is enough to reproduce it.
-fn clone_for_report(error: &ImageErrors) -> ImageErrors {
-    match error {
-        ImageErrors::ImageDecodeErrors(text) => ImageErrors::ImageDecodeErrors(text.clone()),
-        ImageErrors::GenericString(text) => ImageErrors::GenericString(text.clone()),
-        ImageErrors::IoError(io) => ImageErrors::IoError(std::io::Error::new(io.kind(), io.to_string())),
-        other => ImageErrors::GenericString(other.to_string()),
-    }
+    rimage::error::classify_input(path, error, None)
 }
 
 #[cfg(all(feature = "svg", feature = "resize"))]
