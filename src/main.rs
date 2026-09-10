@@ -825,10 +825,20 @@ fn main() -> std::process::ExitCode {
     let sty_aux_operations = ProgressStyle::with_template("{spinner:.yellow} {msg}").unwrap();
     let sty_aux_encode = ProgressStyle::with_template("{spinner:.green} {msg}").unwrap();
 
-    LogWrapper::new(multi.clone(), logger).try_init().unwrap();
+    // try_init may fail if a logger is already installed (e.g. in test
+    // harnesses). Discard the error rather than panicking: the worst case
+    // is that our log filter is not applied, which is non-fatal.
+    let _ = LogWrapper::new(multi.clone(), logger).try_init();
     log::set_max_level(level);
 
-    let current_dir = std::env::current_dir().unwrap_or_default();
+    let current_dir = std::env::current_dir().unwrap_or_else(|error| {
+        // current_dir fails when the CWD was deleted or is inaccessible.
+        // An empty PathBuf causes subsequent path joins to produce relative
+        // paths, which at least does not crash; log the cause so the user
+        // can diagnose the real problem.
+        log::error!("Cannot determine current directory: {error}; using relative paths");
+        PathBuf::new()
+    });
     let matches = cli().get_matches_from(std::env::args());
 
     let state: Arc<Mutex<ProcessingState>> = Arc::new(Mutex::new(ProcessingState::new()));
@@ -1125,7 +1135,7 @@ fn main() -> std::process::ExitCode {
                         // Extract zune-image properties
                         let (w, h) = img.dimensions();
                         let pixel_count = (w as u64) * (h as u64);
-                        let aspect_ratio = w as f64 / h as f64;
+                        let aspect_ratio = if h == 0 { 0.0 } else { w as f64 / h as f64 };
                         let colorspace = img.colorspace();
                         let is_animated = img.is_animated();
                         let frame_count = img.frames_len();
