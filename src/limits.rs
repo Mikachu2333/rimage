@@ -20,7 +20,9 @@
 //! values that the format specifications themselves mandate, plus the
 //! documented estimates in [`PipelineCost`].
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(feature = "limits")]
+use std::path::PathBuf;
 
 use zune_core::{bit_depth::BitDepth, colorspace::ColorSpace};
 
