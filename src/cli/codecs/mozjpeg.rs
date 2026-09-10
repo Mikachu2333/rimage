@@ -25,7 +25,10 @@ pub fn mozjpeg() -> Command {
                     "Sets chroma subsampling for the output JPEG.\n\
                      \n\
                      1 = 4:4:4 (no chroma subsampling, best color fidelity), \
-                     2 = 4:2:0 (default at most quality levels, smallest file).\n\
+                     2 = 4:2:0 (default at most quality levels, smallest file), \
+                     3 and 4 = NxN sampling factors that downsample chroma even \
+                     further; legal but nonstandard, and rarely useful outside \
+                     file-size experiments.\n\
                      \n\
                      By default rimage lets MozJPEG pick automatically; at \
                      typical qualities it picks 2 (4:2:0), which throws away \
