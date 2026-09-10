@@ -142,6 +142,19 @@ pub enum InputError {
         /// Why they are unusable.
         reason: &'static str,
     },
+    /// The encoder for the requested output format could not be configured.
+    ///
+    /// Distinct from [`InputError::Decode`] because the file was read
+    /// successfully; the failure is in matching the user's configuration
+    /// (quality, colorspace, sampling) to the encoder's capabilities.
+    Configuration {
+        /// The file being processed.
+        path: PathBuf,
+        /// The output format that was being set up.
+        format: ImageFormatId,
+        /// The encoder's own report.
+        cause: ImageErrors,
+    },
 }
 
 /// Why a format could not be handed to a decoder.
@@ -237,6 +250,7 @@ impl RimageError {
             RimageError::Input(InputError::UnsupportedFormat { .. }) => "input.unsupported-format",
             RimageError::Input(InputError::SizeLimit { .. }) => "input.size-limit",
             RimageError::Input(InputError::InvalidResize { .. }) => "input.invalid-resize",
+            RimageError::Input(InputError::Configuration { .. }) => "input.configuration",
             RimageError::Output(OutputError::Io { .. }) => "output.io",
             RimageError::Output(OutputError::Encode { .. }) => "output.encode",
             RimageError::Output(OutputError::SizeLimit { .. }) => "output.size-limit",
@@ -250,7 +264,8 @@ impl RimageError {
             RimageError::Input(InputError::Open { path, .. })
             | RimageError::Input(InputError::Decode { path, .. })
             | RimageError::Input(InputError::UnsupportedFormat { path, .. })
-            | RimageError::Input(InputError::SizeLimit { path, .. }) => path,
+            | RimageError::Input(InputError::SizeLimit { path, .. })
+            | RimageError::Input(InputError::Configuration { path, .. }) => path,
             RimageError::Input(InputError::InvalidResize { .. }) => Path::new(""),
             RimageError::Output(OutputError::Io { path, .. })
             | RimageError::Output(OutputError::Encode { path, .. })
@@ -316,6 +331,15 @@ impl RimageError {
             RimageError::Input(InputError::Decode { .. }) => {
                 Some("check that the file is not truncated or corrupt".to_string())
             }
+            RimageError::Input(InputError::Configuration { cause, .. }) => {
+                // The cause text already names the invalid value and the
+                // constraint (e.g. "Unsupported mozjpeg colorspace: foo"),
+                // so there is nothing actionable to add beyond restating it.
+                // Returning None avoids a generic "check the docs" hint that
+                // is less useful than the error text itself.
+                let _ = cause;
+                None
+            }
             RimageError::Output(OutputError::Encode { cause, .. }) => match cause {
                 ImageErrors::EncodeErrors(ImgEncodeErrors::UnsupportedColorspace(..)) => {
                     Some("choose an output format that accepts this image's colorspace".to_string())
@@ -370,6 +394,45 @@ pub fn output_size_limit(
         format,
         violation,
     })
+}
+
+/// Build an input IO failure (cannot open or read the file).
+///
+/// Used at call sites that produce `io::Error` while reading the input file,
+/// such as `Path::metadata()`, so they are reported with the same structured
+/// form as decode failures.
+pub fn input_open_error(path: &Path, error: &std::io::Error) -> RimageError {
+    RimageError::Input(InputError::Open {
+        path: path.to_path_buf(),
+        cause: std::io::Error::new(error.kind(), error.to_string()),
+    })
+}
+
+/// Build an encoder-configuration failure.
+///
+/// Used when `encoder()` rejects a CLI argument (e.g. an unsupported
+/// `--colorspace`). The file was read successfully — the failure is in
+/// matching the user's configuration to the encoder's capabilities, which is
+/// why it has its own variant rather than being labelled a decode error.
+pub fn input_config_error(
+    path: &Path, encoder_name: &str, error: &ImageErrors,
+) -> RimageError {
+    RimageError::Input(InputError::Configuration {
+        path: path.to_path_buf(),
+        format: ImageFormatId::from_encoder_name(encoder_name),
+        cause: clone_image_errors(error),
+    })
+}
+
+/// Build an operation-execution failure.
+///
+/// Wraps `op.execute()` errors through [`classify_input`] so they get a
+/// format tag and hint. Operations like resize and quantize fail when the
+/// image's bit depth or colorspace does not match the operation's
+/// requirements; `classify_input` already handles the resize-specific case.
+pub fn input_operation_error(path: &Path, error: &ImageErrors) -> RimageError {
+    classify_input(path, error, None)
+        .expect("classify_input always returns Some for any ImageErrors variant")
 }
 
 /// Build a hint naming the violated ceiling and a size that would fit.
@@ -477,6 +540,13 @@ impl Display for RimageError {
                 "input: cannot resize to {}x{}: {reason}",
                 requested.0, requested.1
             ),
+            RimageError::Input(InputError::Configuration { path, format, cause }) => write!(
+                f,
+                "input: cannot configure {} encoder for {}: {}",
+                format.name(),
+                path.display(),
+                flatten(cause)
+            ),
             RimageError::Output(OutputError::Io { path, cause }) => {
                 write!(f, "output: cannot write {}: {cause}", path.display())
             }
@@ -571,6 +641,7 @@ impl std::error::Error for RimageError {
                 | InputError::SizeLimit { .. }
                 | InputError::InvalidResize { .. },
             ) => None,
+            RimageError::Input(InputError::Configuration { cause, .. }) => Some(cause),
             RimageError::Output(OutputError::Io { cause, .. }) => Some(cause),
             RimageError::Output(OutputError::Encode { cause, .. }) => Some(cause),
             RimageError::Output(OutputError::SizeLimit { .. } | OutputError::OutOfSpace { .. }) => {
@@ -760,6 +831,11 @@ fn clone_input(error: &InputError) -> InputError {
         InputError::InvalidResize { requested, reason } => InputError::InvalidResize {
             requested: *requested,
             reason,
+        },
+        InputError::Configuration { path, format, cause } => InputError::Configuration {
+            path: path.clone(),
+            format: *format,
+            cause: clone_image_errors(cause),
         },
     }
 }
