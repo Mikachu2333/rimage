@@ -218,12 +218,51 @@ fn resolve_target_size(
     let area = (width as u64) * (height as u64);
     let budget = options.pixel_budget.unwrap_or(MAX_TARGET_PIXELS);
     if area > budget {
-        return Err(ImageErrors::ImageDecodeErrors(format!(
-            "SVG target size {width}x{height} ({area} pixels) exceeds the limit of {budget} pixels ({MAX_SVG_DECODE_BYTES} byte decode budget per {SVG_SIMULTANEOUS_PIXEL_BUFFERS} pixel buffers), reduce the --resize target or the intrinsic size",
-        )));
+        return Err(size_limit_error(width, height, area, budget));
     }
 
     Ok((width, height))
+}
+
+/// Marker prefix identifying an SVG render-target rejection.
+///
+/// `zune_image::errors::ImageErrors` has no variant for "too large", and it is
+/// an external type this crate cannot extend. A string is the only channel
+/// available, so the one this decoder controls carries a stable marker and the
+/// numbers, and [`crate::error::classify_input`] turns it back into a
+/// structured failure. Prose alone would force the classifier to pattern-match
+/// a human-readable message, which breaks the moment the wording changes.
+pub const SIZE_LIMIT_MARKER: &str = "rimage-svg-size-limit:";
+
+/// Build the rejection for a render target that exceeds the pixel budget.
+fn size_limit_error(width: usize, height: usize, area: u64, budget: u64) -> ImageErrors {
+    ImageErrors::ImageDecodeErrors(format!(
+        "{SIZE_LIMIT_MARKER}{width}x{height}:{area}:{budget}: SVG target size {width}x{height} \
+         ({area} pixels) exceeds the limit of {budget} pixels, reduce the --resize target or \
+         the intrinsic size",
+    ))
+}
+
+/// Parse a [`SIZE_LIMIT_MARKER`] message back into its numbers.
+///
+/// Returns `(width, height, actual_pixels, allowed_pixels)`.
+pub fn parse_size_limit(message: &str) -> Option<(u64, u64, u64, u64)> {
+    let rest = message.strip_prefix(SIZE_LIMIT_MARKER)?;
+    // Fields are `WxH:actual:allowed`, terminated by the prose that follows.
+    let rest = rest.split_whitespace().next()?;
+
+    let mut fields = rest.split(':');
+    let dimensions = fields.next()?;
+    let actual = fields.next()?.parse().ok()?;
+    let allowed = fields.next()?.parse().ok()?;
+
+    let (width, height) = dimensions.split_once('x')?;
+    Some((
+        width.parse().ok()?,
+        height.parse().ok()?,
+        actual,
+        allowed,
+    ))
 }
 
 impl DecoderTrait for SvgDecoder {

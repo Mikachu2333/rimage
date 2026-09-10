@@ -3,7 +3,7 @@ use std::fs::File;
 use zune_core::colorspace::ColorSpace;
 use zune_image::image::Image;
 
-use super::{MAX_TARGET_PIXELS, SvgDecoder, SvgOptions};
+use super::{parse_size_limit, MAX_TARGET_PIXELS, SIZE_LIMIT_MARKER, SvgDecoder, SvgOptions};
 
 #[test]
 fn max_target_pixels_fits_the_decode_byte_budget() {
@@ -169,4 +169,31 @@ fn decode_with_oversized_target_size_errors() {
     let decoder = SvgDecoder::try_new_with_options(file, options);
 
     assert!(decoder.is_err());
+}
+
+#[test]
+fn decode_oversized_svg_carries_a_size_limit_marker() {
+    // The huge-canvas fixture's intrinsic dimensions (200000 x 100000) push
+    // the render target well past `MAX_TARGET_PIXELS`. The error must carry
+    // the structured marker so `error::classify_input` can recover a
+    // `SizeLimit` failure instead of a generic decode error.
+    let file = File::open("tests/files/svg/huge-canvas.svg").unwrap();
+    let err = SvgDecoder::try_new(file).err().expect("expected size-limit error");
+    let message = err.to_string();
+
+    assert!(
+        message.starts_with(SIZE_LIMIT_MARKER),
+        "message must start with the structured marker; got: {message}"
+    );
+    let parsed = parse_size_limit(&message).expect("marker must be parseable");
+    let (width, height, actual, allowed) = parsed;
+    assert!(actual > allowed, "actual={actual} must exceed allowed={allowed}");
+    assert_eq!(width * height, actual);
+}
+
+#[test]
+fn parse_size_limit_rejects_messages_without_the_marker() {
+    assert!(parse_size_limit("plain text").is_none());
+    assert!(parse_size_limit("100x100:10000:8000 trailing").is_none());
+    assert!(parse_size_limit("").is_none());
 }

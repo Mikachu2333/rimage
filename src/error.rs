@@ -45,6 +45,11 @@ use zune_image::errors::{ImageErrors, ImgEncodeErrors};
 
 use crate::limits::{ImageFormatId, LimitViolation, ViolationKind};
 
+#[cfg(feature = "svg")]
+use crate::codecs::svg::parse_size_limit;
+#[cfg(feature = "svg")]
+use crate::limits::Binding;
+
 /// Which side of the pipeline a failure happened on.
 ///
 /// Kept separate from the specific error so callers can branch on direction
@@ -603,6 +608,31 @@ pub fn classify_input(
                 reason: UnsupportedReason::FeatureNotEnabled,
             },
         ),
+        // The SVG decoder has no variant for "render target is too large" on the
+        // upstream `ImageErrors` enum, so it stamps a structured marker on the
+        // decode-error string and `classify_input` rehydrates the structured
+        // failure here. The budget always comes from the memory-derived
+        // `LimitSet` in `cli::pipeline`, so `Binding::Memory` is the honest label
+        // for where the ceiling originated.
+        #[cfg(feature = "svg")]
+        ImageErrors::ImageDecodeErrors(message) if format == ImageFormatId::Svg => match parse_size_limit(message) {
+            Some((width, height, actual, allowed)) => RimageError::Input(InputError::SizeLimit {
+                path: path.to_path_buf(),
+                format,
+                dimensions: Some((width, height)),
+                violation: LimitViolation {
+                    kind: ViolationKind::Pixels,
+                    actual,
+                    allowed,
+                    binding: Binding::Memory,
+                },
+            }),
+            None => RimageError::Input(InputError::Decode {
+                path: path.to_path_buf(),
+                format,
+                cause: clone_image_errors(error),
+            }),
+        },
         ImageErrors::ImageOperationNotImplemented(operation, _) if *operation == "resize" => {
             // Without the caller's context there is nothing to say beyond "the
             // resize failed", so fall through to a decode error rather than
