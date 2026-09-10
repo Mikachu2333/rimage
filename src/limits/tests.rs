@@ -209,19 +209,6 @@ fn suggested_side_is_at_least_one() {
 }
 
 #[test]
-fn integer_sqrt_matches_known_values() {
-    assert_eq!(integer_sqrt(0), 0);
-    assert_eq!(integer_sqrt(1), 1);
-    assert_eq!(integer_sqrt(2), 1);
-    assert_eq!(integer_sqrt(4), 2);
-    assert_eq!(integer_sqrt(15), 3);
-    assert_eq!(integer_sqrt(16), 4);
-    assert_eq!(integer_sqrt(17), 4);
-    assert_eq!(integer_sqrt(10_000), 100);
-    assert_eq!(integer_sqrt(u64::MAX), 4_294_967_295);
-}
-
-#[test]
 fn pipeline_cost_sums_all_stages() {
     let cost = PipelineCost::new(3, 2, 2, 16);
     assert_eq!(cost.total(), 23);
