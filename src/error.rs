@@ -344,23 +344,34 @@ impl RimageError {
                 ImageErrors::EncodeErrors(ImgEncodeErrors::UnsupportedColorspace(..)) => {
                     Some("choose an output format that accepts this image's colorspace".to_string())
                 }
-                _ => Some("check that the file is not truncated or corrupt".to_string()),
+                // An encode failure is a property of the output side — the
+                // input decoded fine — so the input-side "truncated or
+                // corrupt" advice would send the user looking at the wrong
+                // file.
+                _ => Some(
+                    "check that this encoder supports the image's dimensions and bit depth, \
+                     or choose another output format"
+                        .to_string(),
+                ),
             },
         }
     }
 
     /// Report this failure through the `log` crate.
     ///
-    /// The message line is the [`Display`](std::fmt::Display) text, so it stays
-    /// a single grep-able line, and the hint follows on its own `hint: ` line
-    /// because it names a different thing to do rather than more context about
-    /// what broke. The [`kind`](RimageError::kind) slug is included so a log
-    /// capture can be filtered by failure class without matching prose.
+    /// The message line is the [`Display`](std::fmt::Display) text — which
+    /// already names the file — so it stays a single grep-able line without
+    /// printing the path twice. (A leading `path: ` prefix also produced a
+    /// bare `": "` for the path-less `InvalidResize`.) The hint follows on its
+    /// own `hint: ` line because it names a different thing to do rather than
+    /// more context about what broke. The [`kind`](RimageError::kind) slug is
+    /// included so a log capture can be filtered by failure class without
+    /// matching prose.
     ///
     /// Kept here rather than in `main.rs` so every call site formats failures
     /// identically, including the ones inside the worker threads.
     pub fn log(&self) {
-        log::error!("{}: {} [{}]", self.path().display(), self, self.kind());
+        log::error!("{self} [{}]", self.kind());
 
         // A failure with no actionable advice prints one line, not two with an
         // empty second one.
