@@ -20,28 +20,29 @@ pub fn cli() -> Command {
 /// and both preprocessing operations are feature-gated, and a static table
 /// would advertise subcommands that do not exist in a trimmed build.
 fn after_help() -> String {
-    let mut rows: Vec<&'static str> = Vec::new();
-    #[cfg(feature = "avif")]
-    rows.push("| avif          | O     | O      | Static only       |");
-    rows.push("| bmp           | O     | X      |                   |");
-    rows.push("| farbfeld      | O     | O      |                   |");
-    rows.push("| hdr           | O     | O      |                   |");
-    rows.push("| jpeg          | O     | O      |                   |");
-    rows.push("| jpeg_xl(jxl)  | O     | O      |                   |");
-    #[cfg(feature = "mozjpeg")]
-    rows.push("| mozjpeg(moz)  | O     | O      |                   |");
-    #[cfg(feature = "oxipng")]
-    rows.push("| oxipng(oxi)   | O     | O      | Static only       |");
-    rows.push("| png           | O     | O      | Static only       |");
-    rows.push("| ppm           | O     | O      |                   |");
-    rows.push("| psd           | O     | X      |                   |");
-    rows.push("| qoi           | O     | O      |                   |");
-    #[cfg(feature = "svg")]
-    rows.push("| svg           | O     | X      | Resize losslessly |");
-    #[cfg(feature = "tiff")]
-    rows.push("| tiff          | O     | X      |                   |");
-    #[cfg(feature = "webp")]
-    rows.push("| webp          | O     | O      | Static only       |");
+    let rows: &[&'static str] = &[
+        #[cfg(feature = "avif")]
+        "| avif          | O     | O      | Static only       |",
+        "| bmp           | O     | X      |                   |",
+        "| farbfeld      | O     | O      |                   |",
+        "| hdr           | O     | O      |                   |",
+        "| jpeg          | O     | O      |                   |",
+        "| jpeg_xl(jxl)  | O     | O      |                   |",
+        #[cfg(feature = "mozjpeg")]
+        "| mozjpeg(moz)  | O     | O      |                   |",
+        #[cfg(feature = "oxipng")]
+        "| oxipng(oxi)   | O     | O      | Static only       |",
+        "| png           | O     | O      | Static only       |",
+        "| ppm           | O     | O      |                   |",
+        "| psd           | O     | X      |                   |",
+        "| qoi           | O     | O      |                   |",
+        #[cfg(feature = "svg")]
+        "| svg           | O     | X      | Resize losslessly |",
+        #[cfg(feature = "tiff")]
+        "| tiff          | O     | X      |                   |",
+        #[cfg(feature = "webp")]
+        "| webp          | O     | O      | Static only       |",
+    ];
 
     let mut text = String::from(
         "\nList of supported codecs\n\
@@ -52,7 +53,6 @@ fn after_help() -> String {
         text.push_str(row);
         text.push('\n');
     }
-
     text.push_str("\nList of supported preprocessing options\n");
     #[cfg(feature = "resize")]
     text.push_str("- Resize\n");
