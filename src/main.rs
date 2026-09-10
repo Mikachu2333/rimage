@@ -36,16 +36,74 @@ use crate::cli::pipeline::encoder;
 
 mod cli;
 
-macro_rules! handle_error {
-    ( $path:expr, $e:expr ) => {
+/// Report a failure and abandon the current file.
+///
+/// The `side` argument says whether the failure happened reading the input or
+/// writing the output, which is what lets the run end with a code that names
+/// the side. It is passed explicitly rather than inferred so a call site cannot
+/// be mislabelled by accident.
+///
+/// The failure is recorded on the shared [`ProcessingState`] before returning,
+/// so the end-of-run summary can count the sides separately and the process can
+/// exit with the code that matches.
+macro_rules! fail_file {
+    ( input, $state:expr, $path:expr, $e:expr ) => {
         match $e {
             Ok(v) => v,
             Err(e) => {
+                record_failure(&$state, rimage::exit::ExitCode::Input);
                 log::error!("{}: {e}", $path.display());
                 return;
             }
         }
     };
+    ( output, $state:expr, $path:expr, $e:expr ) => {
+        match $e {
+            Ok(v) => v,
+            Err(e) => {
+                record_failure(&$state, rimage::exit::ExitCode::Output);
+                log::error!("{}: {e}", $path.display());
+                return;
+            }
+        }
+    };
+}
+
+/// Report a structured pipeline failure and abandon the current file.
+///
+/// Unlike [`fail_file!`] the side comes from the error itself, and the message
+/// carries the hint the `error` module derived for it.
+macro_rules! fail_pipeline {
+    ( $state:expr, $e:expr ) => {
+        match $e {
+            Ok(v) => v,
+            Err(e) => {
+                record_structured_failure(&$state, &e);
+                return;
+            }
+        }
+    };
+}
+
+/// Refuse the current file for a reason discovered here, and abandon it.
+///
+/// The bare `return`s that used to sit on these paths logged a message but left
+/// no trace on the run, so the process still reported success. Every early exit
+/// from the worker must go through this or one of the `fail_*` macros, or the
+/// exit code stops describing what happened.
+macro_rules! refuse_file {
+    ( input, $state:expr, $path:expr, $($arg:tt)* ) => {{
+        record_failure(&$state, rimage::exit::ExitCode::Input);
+        log::error!($($arg)*);
+        let _ = &$path;
+        return;
+    }};
+    ( output, $state:expr, $path:expr, $($arg:tt)* ) => {{
+        record_failure(&$state, rimage::exit::ExitCode::Output);
+        log::error!($($arg)*);
+        let _ = &$path;
+        return;
+    }};
 }
 
 const SUPPORTS_EXIF: &[&str; 7] = &[
@@ -62,6 +120,14 @@ struct Result {
 struct ProcessingState {
     results: Vec<Result>,
     metadata: Option<Metadata>,
+    /// The verdict for the run, accumulated as each file finishes.
+    ///
+    /// Kept here rather than counted from `results.len()` at the end, because
+    /// the number of successes cannot distinguish a failure to read an input
+    /// from a failure to write an output — and those exit with different codes.
+    run: rimage::exit::RunState,
+    /// The side each failure happened on, for the end-of-run summary.
+    failures: Vec<rimage::exit::ExitCode>,
 }
 
 impl ProcessingState {
@@ -69,8 +135,47 @@ impl ProcessingState {
         Self {
             results: vec![],
             metadata: None,
+            run: rimage::exit::RunState::start(),
+            failures: vec![],
         }
     }
+
+    /// Fold the outcome of one file into the run verdict.
+    fn record(&mut self, file: rimage::exit::ExitCode) {
+        self.run = self.run.record(file);
+    }
+}
+
+/// Record a failure on the shared state.
+///
+/// Called from the worker threads, so it takes the state by reference and locks
+/// internally. Only the count and the side are kept: each failure's path was
+/// already logged at the point it happened, and repeating the list at the end
+/// would bury the summary line the reader is looking for.
+fn record_failure(state: &Arc<Mutex<ProcessingState>>, side: rimage::exit::ExitCode) {
+    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+    state.record(side);
+    state.failures.push(side);
+}
+
+/// Record a failure that already carries its own structured message.
+///
+/// Used for the pipeline's own [`RimageError`](rimage::error::RimageError)
+/// values, which know their side and would otherwise have to be taken apart and
+/// reassembled to be logged.
+fn record_structured_failure(state: &Arc<Mutex<ProcessingState>>, error: &rimage::error::RimageError) {
+    let side = match error.direction() {
+        rimage::error::Direction::Input => rimage::exit::ExitCode::Input,
+        rimage::error::Direction::Output => rimage::exit::ExitCode::Output,
+    };
+
+    {
+        let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+        state.record(side);
+        state.failures.push(side);
+    }
+
+    error.log();
 }
 
 /// Limits concurrent image processing to prevent OOM with large images.
@@ -624,7 +729,7 @@ fn main() -> std::process::ExitCode {
                 Ok(pool) => pool,
                 Err(error) => {
                     log::error!("Failed to create image worker pool: {error}");
-                    return std::process::ExitCode::FAILURE;
+                    return std::process::ExitCode::from(rimage::exit::ExitCode::Usage.as_u8());
                 }
             };
 
@@ -648,7 +753,7 @@ fn main() -> std::process::ExitCode {
                 Ok(files) => files,
                 Err(error) => {
                     log::error!("{error}");
-                    return std::process::ExitCode::FAILURE;
+                    return std::process::ExitCode::from(rimage::exit::ExitCode::Usage.as_u8());
                 }
             };
             log::debug!("Resolved files: {files:#?}");
@@ -679,7 +784,7 @@ fn main() -> std::process::ExitCode {
                 Ok(encoder) => encoder.to_extension(),
                 Err(error) => {
                     log::error!("Failed to initialize encoder: {error}");
-                    return std::process::ExitCode::FAILURE;
+                    return std::process::ExitCode::from(rimage::exit::ExitCode::Usage.as_u8());
                 }
             };
             let paths = match get_paths(files, out_dir, suffix, recursive) {
@@ -692,11 +797,11 @@ fn main() -> std::process::ExitCode {
                     .collect::<Vec<_>>(),
                 Ok(_) => {
                     log::error!("No input files found. Check the file paths.");
-                    return std::process::ExitCode::FAILURE;
+                    return std::process::ExitCode::from(rimage::exit::ExitCode::Usage.as_u8());
                 }
                 Err(error) => {
                     log::error!("{error}");
-                    return std::process::ExitCode::FAILURE;
+                    return std::process::ExitCode::from(rimage::exit::ExitCode::Usage.as_u8());
                 }
             };
             let file_count = paths.len() as u64;
@@ -720,14 +825,14 @@ fn main() -> std::process::ExitCode {
                         "Multiple input files resolve to the same output path: {}",
                         output.display()
                     );
-                    return std::process::ExitCode::FAILURE;
+                    return std::process::ExitCode::from(rimage::exit::ExitCode::Usage.as_u8());
                 }
                 if input_key != output_key && input_paths.contains(&output_key) {
                     log::error!(
                         "Output path would overwrite another input file: {}",
                         output.display()
                     );
-                    return std::process::ExitCode::FAILURE;
+                    return std::process::ExitCode::from(rimage::exit::ExitCode::Usage.as_u8());
                 }
             }
             if output_metadata {
@@ -737,7 +842,7 @@ fn main() -> std::process::ExitCode {
                         "Metadata path conflicts with an input or output image: {}",
                         metadata_path.display()
                     );
-                    return std::process::ExitCode::FAILURE;
+                    return std::process::ExitCode::from(rimage::exit::ExitCode::Usage.as_u8());
                 }
             }
 
@@ -768,8 +873,8 @@ fn main() -> std::process::ExitCode {
                         pb.set_message(format!("{}", input.display()));
                         pb.enable_steady_tick(Duration::from_millis(100));
 
-                        // Advance progress bars on all exit paths (including early
-                        // returns from handle_error!).
+                        // Advance progress bars on all exit paths (including the
+                        // early returns from the `fail_file!` calls below).
                         let _finish = FinishGuard {
                             pb: pb.clone(),
                             pb_main: pb_main.clone(),
@@ -785,14 +890,16 @@ fn main() -> std::process::ExitCode {
                         if let Some(backup_path) = &backup_path
                             && paths_equivalent(&output, backup_path)
                         {
-                            log::error!(
+                            refuse_file!(
+                                input,
+                                state,
+                                input,
                                 "{}: output path {} is the same as the --backup path {}; \
                                  use a different --suffix or drop --backup",
                                 input.display(),
                                 output.display(),
                                 backup_path.display()
                             );
-                            return;
                         }
                         // A backup left by an earlier run preserves the
                         // original image; refuse to overwrite or delete it.
@@ -800,29 +907,33 @@ fn main() -> std::process::ExitCode {
                         if let Some(backup_path) = &backup_path {
                             match fs::symlink_metadata(backup_path) {
                                 Ok(_) => {
-                                    log::error!(
+                                    refuse_file!(
+                                        input,
+                                        state,
+                                        input,
                                         "{}: --backup destination already exists: {}; \
                                          refusing to overwrite it",
                                         input.display(),
                                         backup_path.display()
                                     );
-                                    return;
                                 }
                                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                                 Err(error) => {
-                                    log::error!(
+                                    refuse_file!(
+                                        input,
+                                        state,
+                                        input,
                                         "{}: cannot inspect --backup destination {}: {error}",
                                         input.display(),
                                         backup_path.display()
                                     );
-                                    return;
                                 }
                             }
                         }
 
                         let mut ops: Vec<Box<dyn OperationsTrait>> = Vec::new();
 
-                        let input_size = handle_error!(input, input.metadata()).len();
+                        let input_size = fail_file!(input, state, input, input.metadata()).len();
                         let input_format = get_file_extension(&input);
                         let input_modified = get_file_modified_time(&input);
 
@@ -832,7 +943,7 @@ fn main() -> std::process::ExitCode {
                                 ext.eq_ignore_ascii_case("svg") || ext.eq_ignore_ascii_case("svgz")
                             });
 
-                        let mut img = handle_error!(input, decode(&input, matches));
+                        let mut img = fail_pipeline!(state, decode(&input, matches));
 
                         // Preserve JPEG metadata directly from the source file.
                         // EXIF is copied as a raw APP1 segment instead of being
@@ -903,7 +1014,7 @@ fn main() -> std::process::ExitCode {
                         let original_bit_depth = img.depth();
 
                         let mut available_encoder =
-                            handle_error!(input, encoder(subcommand, matches));
+                            fail_file!(input, state, input, encoder(subcommand, matches));
                         let output_format = available_encoder.to_extension().to_string();
 
                         available_encoder.set_jfif_density(jfif_density);
@@ -930,31 +1041,37 @@ fn main() -> std::process::ExitCode {
                             });
 
                         for op in ops {
-                            handle_error!(input, op.execute(&mut img));
+                            fail_file!(input, state, input, op.execute(&mut img));
                         }
 
                         pb.set_style(sty_aux_encode.clone());
 
-                        handle_error!(
+                        fail_file!(
+                            output,
+                            state,
                             output,
                             prepare_output_parent(&output, output_root.as_deref())
                         );
                         let (temporary, output_file) =
-                            handle_error!(output, TemporaryOutput::new(&output));
+                            fail_file!(output, state, output, TemporaryOutput::new(&output));
 
-                        handle_error!(output, available_encoder.encode(&img, output_file));
+                        fail_file!(output, state, output, available_encoder.encode(&img, output_file));
 
-                        if output_format == "jpg" {
-                            if let Some(raw_exif) = raw_exif_app1 {
-                                handle_error!(
-                                    temporary.path,
-                                    insert_jpeg_exif_app1(&temporary.path, &raw_exif)
-                                );
-                            }
+                        if output_format == "jpg"
+                            && let Some(raw_exif) = raw_exif_app1
+                        {
+                            fail_file!(
+                                output,
+                                state,
+                                temporary.path,
+                                insert_jpeg_exif_app1(&temporary.path, &raw_exif)
+                            );
                         }
 
                         if let Some(actual_metadata) = exif_metadata {
-                            handle_error!(
+                            fail_file!(
+                                output,
+                                state,
                                 temporary.path,
                                 actual_metadata.write_to_file(&temporary.path)
                             );
@@ -962,34 +1079,37 @@ fn main() -> std::process::ExitCode {
 
                         if let Some(backup_path) = backup_path.as_deref() {
                             if let Err(error) = create_backup(&input, backup_path) {
-                                log::error!("{}: {error}", input.display());
-                                return;
+                                refuse_file!(output, state, output, "{}: {error}", input.display());
                             }
                             if let Err(error) = temporary.publish(&output) {
                                 if let Err(cleanup_error) = fs::remove_file(backup_path) {
-                                    log::error!(
+                                    refuse_file!(
+                                        output,
+                                        state,
+                                        output,
                                         "{}: publish failed ({error}); removing the new backup also failed: {cleanup_error}",
                                         output.display()
                                     );
                                 } else {
-                                    log::error!("{}: {error}", output.display());
+                                    refuse_file!(output, state, output, "{}: {error}", output.display());
                                 }
-                                return;
                             }
                             if output_path_key(&input) != output_path_key(&output)
                                 && let Err(error) = fs::remove_file(&input)
                             {
-                                log::error!(
+                                refuse_file!(
+                                    output,
+                                    state,
+                                    output,
                                     "{}: output was published and backup created, but the original input could not be removed: {error}",
                                     input.display()
                                 );
-                                return;
                             }
                         } else {
-                            handle_error!(output, temporary.publish(&output));
+                            fail_file!(output, state, output, temporary.publish(&output));
                         }
 
-                        let output_size = handle_error!(output, output.metadata()).len();
+                        let output_size = fail_file!(output, state, output, output.metadata()).len();
                         let processing_time = image_start_time.elapsed().as_millis();
                         let compression_ratio = size_ratio(output_size, input_size);
                         let space_saved = space_saved(input_size, output_size);
@@ -1131,16 +1251,25 @@ fn main() -> std::process::ExitCode {
             } else {
                 "RUST_LOG=debug"
             };
-            let succeeded = state.results.len() as u64;
-            if succeeded < file_count {
+            let failed = state.failures.len() as u64;
+            if failed > 0 {
+                // Split the count by side so the summary says which half of the
+                // pipeline the failures were in, matching the exit code.
+                let input_failures = state
+                    .failures
+                    .iter()
+                    .filter(|side| **side == rimage::exit::ExitCode::Input)
+                    .count() as u64;
+                let output_failures = failed - input_failures;
+
                 log::error!(
-                    "{}/{} file(s) failed. Run with `{}` for details.",
-                    file_count - succeeded,
-                    file_count,
-                    rust_log_hint
+                    "{failed}/{file_count} file(s) failed ({input_failures} reading, \
+                     {output_failures} writing). Run with `{rust_log_hint}` for details."
                 );
-                return std::process::ExitCode::FAILURE;
             }
+
+            // Snapshot the verdict before consuming `state.metadata` below.
+            let run = state.run;
 
             if output_metadata && let Some(metadata) = state.metadata.as_ref() {
                 match serde_json::to_string_pretty(metadata) {
@@ -1154,7 +1283,7 @@ fn main() -> std::process::ExitCode {
                                 "Failed to create metadata directory {}: {error}",
                                 parent.display()
                             );
-                            return std::process::ExitCode::FAILURE;
+                            return report_metadata_failure(run);
                         }
                         match TemporaryOutput::new(&metadata_path) {
                             Ok((temporary, mut file)) => {
@@ -1167,7 +1296,7 @@ fn main() -> std::process::ExitCode {
                                         "Failed to write metadata {}: {error}",
                                         metadata_path.display()
                                     );
-                                    return std::process::ExitCode::FAILURE;
+                                    return report_metadata_failure(run);
                                 }
                             }
                             Err(error) => {
@@ -1175,20 +1304,37 @@ fn main() -> std::process::ExitCode {
                                     "Failed to create metadata output {}: {error}",
                                     metadata_path.display()
                                 );
-                                return std::process::ExitCode::FAILURE;
+                                return report_metadata_failure(run);
                             }
                         }
                     }
                     Err(error) => {
                         log::error!("Failed to serialize metadata: {error}");
-                        return std::process::ExitCode::FAILURE;
+                        return report_metadata_failure(run);
                     }
                 }
             }
+
+            std::process::ExitCode::from(run.exit_code().as_u8())
         }
         None => unreachable!("clap ensures a subcommand is always provided"),
     }
-    std::process::ExitCode::SUCCESS
+}
+
+/// Exit after a failure to write the `--metadata` summary.
+///
+/// The images themselves were already written, so this must not report a clean
+/// failure: the run produced everything the user asked for except the summary,
+/// which is a partial result. It is folded in as an output failure so the
+/// reported code reflects that most of the work succeeded.
+fn report_metadata_failure(
+    run: rimage::exit::RunState,
+) -> std::process::ExitCode {
+    std::process::ExitCode::from(
+        run.record(rimage::exit::ExitCode::Output)
+            .exit_code()
+            .as_u8(),
+    )
 }
 
 #[cfg(test)]
