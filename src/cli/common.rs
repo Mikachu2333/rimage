@@ -42,7 +42,10 @@ impl CommonArgs for Command {
                 Limits how many images are decoded and held in memory at once.
                 Higher values increase speed but use more RAM, which may cause out-of-memory errors with large images.
                 By default, processes one image at a time (--threads 1)."#})
-                .value_parser(value_parser!(u8).range(1i64..=threads::num_threads() as i64)),
+                // u16, not u8: the range upper bound is the machine's core
+                // count, and u8 would cap that at 255 on hardware with more
+                // cores.
+                .value_parser(value_parser!(u16).range(1i64..=threads::num_threads() as i64)),
             arg!(-x --strip "Strip metadata when encoding images (where supported)")
                 .action(ArgAction::SetTrue),
             arg!(--"no-progress" "Disables progress bar.")

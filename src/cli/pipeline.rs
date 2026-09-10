@@ -517,7 +517,7 @@ const WEBP_HEADER_PROBE_BYTES: usize = 64 * 1024;
 #[cfg(feature = "limits")]
 fn concurrency_from_env(matches: &ArgMatches) -> usize {
     matches
-        .get_one::<u8>("threads")
+        .get_one::<u16>("threads")
         .copied()
         .map(|threads| threads as usize)
         .filter(|threads| *threads > 0)
