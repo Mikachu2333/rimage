@@ -149,7 +149,17 @@ fn validate_output_file_name(name: &OsStr) -> Result<(), String> {
         {
             return Err(format!("Output file name {text:?} is not valid on Windows"));
         }
-        let base = text.split('.').next().unwrap_or_default();
+        // Win32 silently strips trailing dots and spaces from file names,
+        // so "out." and "out " would be written as "out" — a different file
+        // than the one reported, and possibly one that aliases a reserved
+        // device name ("CON .png" normalises to the reserved "CON").
+        let stripped = text.trim_end_matches([' ', '.']);
+        if stripped.len() != text.len() {
+            return Err(format!(
+                "Output file name {text:?} ends with a dot or space, which Windows silently strips"
+            ));
+        }
+        let base = stripped.split('.').next().unwrap_or_default().trim_end();
         let reserved = matches!(
             base.to_ascii_uppercase().as_str(),
             "CON"
