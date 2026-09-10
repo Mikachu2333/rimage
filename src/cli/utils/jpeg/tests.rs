@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use super::{JfifDensity, read_jpeg_source_metadata};
+use super::{JfifDensity, insert_jpeg_exif_app1, read_jpeg_source_metadata};
 
 const SOI: [u8; 2] = [0xFF, 0xD8];
 const EOI: [u8; 2] = [0xFF, 0xD9];
@@ -166,5 +166,37 @@ fn a_jpeg_without_metadata_segments_returns_empty_metadata() {
 
     assert!(metadata.jfif_density.is_none());
     assert!(metadata.exif_app1.is_none());
+    std::fs::remove_file(path).ok();
+}
+
+/// The segment length field covers its own two bytes, so a payload above
+/// 65533 bytes would overflow the u16 length — a panic in debug builds and a
+/// wrapped, malformed segment in release. It must be rejected, leaving the
+/// file untouched.
+#[test]
+fn an_oversized_exif_payload_is_rejected_without_touching_the_file() {
+    let original = jpeg(&[]);
+    let path = scratch("exif-oversized", &original);
+    let payload = vec![0u8; 65534];
+
+    let result = insert_jpeg_exif_app1(&path, &payload);
+
+    assert!(result.is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    std::fs::remove_file(path).ok();
+}
+
+/// The largest legal payload is 65533 bytes, making the declared segment
+/// length exactly u16::MAX.
+#[test]
+fn the_largest_legal_exif_payload_is_written() {
+    let path = scratch("exif-max", &jpeg(&[]));
+    let payload = vec![0u8; 65533];
+
+    insert_jpeg_exif_app1(&path, &payload).unwrap();
+
+    let data = std::fs::read(&path).unwrap();
+    assert_eq!(&data[2..4], &[0xFF, 0xE1]);
+    assert_eq!(u16::from_be_bytes([data[4], data[5]]), u16::MAX);
     std::fs::remove_file(path).ok();
 }

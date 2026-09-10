@@ -194,13 +194,19 @@ pub fn insert_jpeg_exif_app1(path: &Path, exif_payload: &[u8]) -> io::Result<()>
         ));
     }
 
-    let payload_len = u16::try_from(exif_payload.len()).map_err(|_| {
-        io::Error::new(
+    // The segment length field covers its own two bytes, so the largest
+    // payload that fits is 65533. Checking against `u16::MAX` directly would
+    // let a 65534/65535-byte payload through and overflow `payload_len + 2` —
+    // a panic in debug builds and a wrapped, malformed length in release.
+    const MAX_APP1_PAYLOAD: usize = u16::MAX as usize - 2;
+
+    if exif_payload.len() > MAX_APP1_PAYLOAD {
+        return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "EXIF APP1 payload is too large for a JPEG segment",
-        )
-    })?;
-    let segment_len = payload_len + 2;
+        ));
+    }
+    let segment_len = (exif_payload.len() + 2) as u16;
 
     let mut segment = Vec::with_capacity(4 + exif_payload.len());
     segment.extend_from_slice(&[0xFF, 0xE1]);
