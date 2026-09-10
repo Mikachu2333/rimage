@@ -117,7 +117,7 @@ fn high_depth_luma_expansion_bounds() {
     assert_eq!(expand_chroma(512, 10, true), 0.0);
 }
 
-fn ftyp(major: &[u8; 4], compatible: &[*const [u8; 4]]) -> Vec<u8> {
+fn ftyp(major: &[u8; 4], compatible: &[&[u8; 4]]) -> Vec<u8> {
     let mut box_data = vec![0u8; 8 + 4 + 4 + 4 * compatible.len()];
     let size = box_data.len() as u32;
     box_data[..4].copy_from_slice(&size.to_be_bytes());
@@ -125,20 +125,20 @@ fn ftyp(major: &[u8; 4], compatible: &[*const [u8; 4]]) -> Vec<u8> {
     box_data[8..12].copy_from_slice(major);
     for (index, brand) in compatible.iter().enumerate() {
         let start = 16 + index * 4;
-        box_data[start..start + 4].copy_from_slice(unsafe { &**brand });
+        box_data[start..start + 4].copy_from_slice(brand.as_slice());
     }
     box_data
 }
 
 #[test]
 fn avif_sniffing() {
-    assert!(is_avif(&ftyp(b"avif", &[b"mif1" as *const [u8; 4]])));
+    assert!(is_avif(&ftyp(b"avif", &[b"mif1"])));
     // `avis` (image sequences) as major brand
-    assert!(is_avif(&ftyp(b"avis", &[b"mif1" as *const [u8; 4]])));
+    assert!(is_avif(&ftyp(b"avis", &[b"mif1"])));
     // brand listed only in the compatible brands
-    assert!(is_avif(&ftyp(b"mif1", &[b"avif" as *const [u8; 4]])));
+    assert!(is_avif(&ftyp(b"mif1", &[b"avif"])));
 
-    assert!(!is_avif(&ftyp(b"isom", &[b"mif1" as *const [u8; 4]])));
+    assert!(!is_avif(&ftyp(b"isom", &[b"mif1"])));
     assert!(!is_avif(&[]));
     assert!(!is_avif(&[0; 12]));
     assert!(!is_avif(b"RIFF0000WEBPVP8 "));
