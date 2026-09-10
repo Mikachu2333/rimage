@@ -60,12 +60,9 @@ fn decode_options() -> DecoderOptions {
 ///
 /// Returns `Ok(())` when the format has no readable dimensions for us (an SVG
 /// render target, for instance, which is bounded separately) or when they fit.
-/// The failure is a [`RimageError`] rather than an [`ImageErrors`] because the
-/// violation is resolved here and would otherwise have to be re-parsed out of a
-/// string to be reported.
 #[cfg(feature = "limits")]
-fn check_input_limits(path: &Path) -> Result<(), rimage::error::RimageError> {
-    use rimage::limits::{ImageFormatId, LimitSet, PipelineCost, SystemBudget};
+fn check_input_limits(path: &Path) -> Result<(), ImageErrors> {
+    use rimage::limits::{ImageFormatId, LimitSet, PipelineCost, SystemBudget, ViolationKind};
 
     let extension = path
         .extension()
@@ -74,9 +71,7 @@ fn check_input_limits(path: &Path) -> Result<(), rimage::error::RimageError> {
     let format = ImageFormatId::from_extension(extension);
 
     // Only worth probing for formats we can size up front. Anything else is
-    // rejected later by the decoder or by the SVG point budget. A file that
-    // cannot even be opened is left for the decode step to report, so the
-    // missing-file message keeps coming from one place.
+    // rejected later by the decoder or by the SVG point budget.
     let Ok(reader) = File::open(path) else {
         return Ok(());
     };
@@ -94,11 +89,28 @@ fn check_input_limits(path: &Path) -> Result<(), rimage::error::RimageError> {
         PipelineCost::for_encoder(format),
     );
 
-    limits
-        .check(width, height)
-        .map_err(|violation| {
-            rimage::error::input_size_limit(path, format, Some((width, height)), violation)
-        })
+    match limits.check(width, height) {
+        Ok(()) => Ok(()),
+        Err(violation) => {
+            let measured = match violation.kind {
+                ViolationKind::Width => "width",
+                ViolationKind::Height => "height",
+                ViolationKind::Pixels => "pixel count",
+            };
+
+            // A concrete target is more useful than restating the limit.
+            let side = limits.suggested_side();
+
+            Err(ImageErrors::ImageDecodeErrors(format!(
+                "{} is {width}x{height} ({measured} {}), which exceeds the limit of {} \
+                 (from {}); the largest square that fits is {side}x{side}",
+                path.display(),
+                violation.actual,
+                violation.allowed,
+                violation.binding.describe(),
+            )))
+        }
+    }
 }
 
 /// Read just the dimensions from an image header.
@@ -165,36 +177,22 @@ fn concurrency_from_env() -> usize {
 
 #[allow(unused_variables)]
 #[allow(unused_mut)]
-pub fn decode<P: AsRef<Path>>(f: P, matches: &ArgMatches) -> Result<Image, rimage::error::RimageError> {
-    // The size pre-check already knows which ceiling it broke, so it produces
-    // the structured error directly instead of round-tripping through a string.
+pub fn decode<P: AsRef<Path>>(f: P, matches: &ArgMatches) -> Result<Image, ImageErrors> {
     #[cfg(feature = "limits")]
     check_input_limits(f.as_ref())?;
 
-    Image::open_with_options(f.as_ref(), decode_options())
-        .or_else(|e| decode_with_fallback(f.as_ref(), matches, e))
-        .map_err(|e| classify_decode_failure(f.as_ref(), matches, &e))
-}
-
-/// Retry the decode with the decoders `zune_image` does not own.
-///
-/// Split out of [`decode`] so the fallback chain stays readable and so the
-/// conversion to [`rimage::error::RimageError`] happens in exactly one place.
-fn decode_with_fallback(
-    path: &Path, matches: &ArgMatches, e: ImageErrors,
-) -> Result<Image, ImageErrors> {
-    {
+    Image::open_with_options(f.as_ref(), decode_options()).or_else(|e| {
         if matches!(e, ImageErrors::ImageDecoderNotImplemented(_)) {
             #[cfg(any(feature = "avif", feature = "webp", feature = "svg"))]
-            let mut file = File::open(path)?;
+            let mut file = File::open(f.as_ref())?;
 
             #[cfg(feature = "svg")]
             {
-                if path
+                if f.as_ref()
                     .extension()
                     .is_some_and(|f| f.eq_ignore_ascii_case("svg") | f.eq_ignore_ascii_case("svgz"))
                 {
-                    let resources_dir = path.parent().map(Path::to_path_buf);
+                    let resources_dir = f.as_ref().parent().map(Path::to_path_buf);
 
                     #[cfg(feature = "resize")]
                     let decoder = SvgDecoder::try_new_with_resize(file, resources_dir, |size| {
@@ -236,7 +234,7 @@ fn decode_with_fallback(
 
             #[cfg(feature = "webp")]
             {
-                if path
+                if f.as_ref()
                     .extension()
                     .is_some_and(|f| f.eq_ignore_ascii_case("webp"))
                 {
@@ -252,7 +250,7 @@ fn decode_with_fallback(
 
             #[cfg(feature = "tiff")]
             {
-                if path
+                if f.as_ref()
                     .extension()
                     .is_some_and(|f| f.eq_ignore_ascii_case("tiff") | f.eq_ignore_ascii_case("tif"))
                 {
@@ -266,131 +264,13 @@ fn decode_with_fallback(
                 file.seek(SeekFrom::Start(0))?;
             }
 
-            return Err(ImageErrors::ImageDecoderNotImplemented(
+            Err(ImageErrors::ImageDecoderNotImplemented(
                 ImageFormat::Unknown,
-            ));
+            ))
+        } else {
+            Err(e)
         }
-
-        Err(e)
-    }
-}
-
-/// Turn a decode failure into the structured, side-tagged form the CLI reports.
-///
-/// The resize context is deliberately not reconstructed here. `classify_input`
-/// uses it only to name the requested dimensions in an
-/// `ImageOperationNotImplemented("resize")` failure, and the only resize
-/// failures reachable at decode time are the SVG render-target ones, whose
-/// message already names the offending size. Passing `None` keeps this
-/// function honest instead of inventing a reason it did not observe; the
-/// classification still reports it as an input failure on the right format.
-fn classify_decode_failure(
-    path: &Path, _matches: &ArgMatches, error: &ImageErrors,
-) -> rimage::error::RimageError {
-    use rimage::error::{InputError, RimageError, classify_input};
-
-    classify_input(path, error, None).unwrap_or_else(|| {
-        RimageError::Input(InputError::Decode {
-            path: path.to_path_buf(),
-            format: rimage::limits::ImageFormatId::from_extension(
-                path.extension()
-                    .and_then(|ext| ext.to_str())
-                    .unwrap_or_default(),
-            ),
-            cause: clone_for_report(error),
-        })
     })
-}
-
-/// Rebuild an [`ImageErrors`] so it can be stored in a reported error.
-///
-/// `ImageErrors` has no `Clone`, and the message only ever renders it, so the
-/// text is enough to reproduce it.
-fn clone_for_report(error: &ImageErrors) -> ImageErrors {
-    match error {
-        ImageErrors::ImageDecodeErrors(text) => ImageErrors::ImageDecodeErrors(text.clone()),
-        ImageErrors::GenericString(text) => ImageErrors::GenericString(text.clone()),
-        ImageErrors::IoError(io) => ImageErrors::IoError(std::io::Error::new(io.kind(), io.to_string())),
-        other => ImageErrors::GenericString(other.to_string()),
-    }
-}
-
-#[cfg(all(feature = "svg", feature = "resize"))]
-fn svg_target_size(
-    matches: &ArgMatches,
-    size: (usize, usize),
-) -> Result<Option<(u32, u32)>, ImageErrors> {
-    use crate::cli::preprocessors::ResizeValue;
-
-    let Some(values) = matches.get_many::<ResizeValue>("resize") else {
-        return Ok(None);
-    };
-
-    let downscale = matches.get_flag("downscale") && !matches.get_flag("no-downscale");
-    let upscale = matches.get_flag("upscale") && !matches.get_flag("no-upscale");
-
-    let first_other = first_other_index(matches);
-    let plan = resize_plan(
-        values
-            .into_iter()
-            .zip(matches.indices_of("resize").unwrap())
-            .map(|(value, idx)| (idx, value))
-            .take_while(|(idx, _)| *idx < first_other),
-        size,
-        downscale,
-        upscale,
-    );
-
-    if plan.is_empty() {
-        return Ok(None);
-    }
-
-    let final_size = plan.last().map(|(_, size)| *size).unwrap_or(size);
-    let width = u32::try_from(final_size.0).map_err(|_| {
-        ImageErrors::ImageDecodeErrors(format!(
-            "SVG target width {} exceeds the maximum supported dimension of {}",
-            final_size.0,
-            u32::MAX
-        ))
-    })?;
-    let height = u32::try_from(final_size.1).map_err(|_| {
-        ImageErrors::ImageDecodeErrors(format!(
-            "SVG target height {} exceeds the maximum supported dimension of {}",
-            final_size.1,
-            u32::MAX
-        ))
-    })?;
-
-    Ok(Some((width, height)))
-}
-
-/// Returns the index of the first non-resize preprocessing element.
-///
-/// SVG vector resizing can only be folded into the decode render target for
-/// the resize steps that come before every quantization operation and before
-/// every true `--premultiply` flag. Steps at or after this index must run as
-/// ordinary raster resize operations so command-line order is preserved.
-#[cfg(feature = "resize")]
-fn first_other_index(matches: &ArgMatches) -> usize {
-    let first_premultiply = matches.get_many::<bool>("premultiply").and_then(|values| {
-        values
-            .into_iter()
-            .zip(matches.indices_of("premultiply")?)
-            .find_map(|(value, idx)| if *value { Some(idx) } else { None })
-    });
-
-    #[cfg(feature = "quantization")]
-    let first_quantization = matches
-        .indices_of("quantization")
-        .and_then(|mut indices| indices.next());
-    #[cfg(not(feature = "quantization"))]
-    let first_quantization: Option<usize> = None;
-
-    [first_premultiply, first_quantization]
-        .into_iter()
-        .flatten()
-        .min()
-        .unwrap_or(usize::MAX)
 }
 
 /// Plans a chain of resize operations, returning only the steps that are not
