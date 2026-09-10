@@ -18,17 +18,18 @@
 //! └── Output(OutputError)  the file we were asked to write
 //! ```
 //!
-//! # Output path stays closed
+//! # Output direction
 //!
-//! The user asked for every format to have an explicit message. That is
-//! implemented for the input direction, where the file extension is fully under
-//! our control. For the output direction [`classify_output`] deliberately
-//! returns `None` for anything it cannot name with confidence: the encoders
-//! build error text from `${e:?}` on upstream error types, some route a write
-//! failure through `ImgEncodeErrors::ImageEncodeErrors`, and guessing a format
-//! from those strings would invent detail the error does not carry. `None`
-//! means "unclassified", which still prints the verbatim upstream text. Closing
-//! that properly belongs with the `encoder.rs` rework, not here.
+//! Output failures are classified by the format inferred from the output path's
+//! extension. Unlike input paths, output paths are always under our control:
+//! the encoder chooses the extension, so `.jpg` → jpeg, `.png` → png, etc. The
+//! format tag is therefore authoritative at output, even though the underlying
+//! `ImageErrors` value does not carry it.
+//!
+//! Call sites that know the encoder name (the CLI subcommand) can use
+//! [`output_encode_error`] for an even more authoritative tag, and
+//! [`output_io_error`] for direct `io::Error` values from directory creation,
+//! temp-file allocation, and file publishing.
 //!
 //! [`Display`]: std::fmt::Display
 //!
@@ -297,6 +298,9 @@ impl RimageError {
             RimageError::Output(OutputError::Io { cause, .. }) => match cause.kind() {
                 std::io::ErrorKind::PermissionDenied => {
                     Some("check write permissions on the output directory".to_string())
+                }
+                std::io::ErrorKind::StorageFull => {
+                    Some("free up space on the destination volume or write elsewhere".to_string())
                 }
                 _ => None,
             },
@@ -661,11 +665,67 @@ pub fn classify_input(
 
 /// Classify something that went wrong while writing `path`.
 ///
-/// Returns `None` rather than guessing, for the reasons in the module docs: the
-/// encoders stringify upstream errors, so the format cannot always be recovered
-/// from the value we are handed. `None` means "print the original text".
-pub fn classify_output(_path: &Path, _error: &ImageErrors) -> Option<RimageError> {
-    None
+/// The format is inferred from the output path's extension, which is
+/// authoritative at output: the encoder selects the extension, so `.jpg` is
+/// jpeg, `.png` is png, etc. The underlying `ImageErrors` value does not carry
+/// the format, but the path does.
+///
+/// `ImageErrors::IoError` is routed to [`OutputError::Io`] — directory
+/// creation, temp-file allocation, or publish/rename failures that happened
+/// during encoding. Everything else is an encoder failure →
+/// [`OutputError::Encode`].
+pub fn classify_output(path: &Path, error: &ImageErrors) -> Option<RimageError> {
+    let format = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(ImageFormatId::from_extension)
+        .unwrap_or(ImageFormatId::Other);
+
+    let error_val = match error {
+        ImageErrors::IoError(io) => RimageError::Output(OutputError::Io {
+            path: path.to_path_buf(),
+            cause: std::io::Error::new(io.kind(), io.to_string()),
+        }),
+        _ => RimageError::Output(OutputError::Encode {
+            path: path.to_path_buf(),
+            format,
+            cause: clone_image_errors(error),
+        }),
+    };
+
+    Some(error_val)
+}
+
+/// Build an encode failure from a known encoder name.
+///
+/// Used at call sites where the encoder name is known (the CLI subcommand),
+/// so the format tag is authoritative rather than inferred from the path
+/// extension. The path extension and the encoder name usually agree, but
+/// `mozjpeg` writes `.jpg` and `oxipng` writes `.png`, so the encoder name
+/// is the more direct source.
+pub fn output_encode_error(
+    path: &Path, encoder_name: &str, error: &ImageErrors,
+) -> RimageError {
+    RimageError::Output(OutputError::Encode {
+        path: path.to_path_buf(),
+        format: ImageFormatId::from_encoder_name(encoder_name),
+        cause: clone_image_errors(error),
+    })
+}
+
+/// Build an IO failure on the output side.
+///
+/// Used at call sites that produce `io::Error` directly (directory creation,
+/// temp-file allocation, file publishing, metadata writing), so they are
+/// reported with the same structured form as encoder failures. The path is the
+/// file that was being written when the IO failed.
+pub fn output_io_error(
+    path: &Path, error: &std::io::Error,
+) -> RimageError {
+    RimageError::Output(OutputError::Io {
+        path: path.to_path_buf(),
+        cause: std::io::Error::new(error.kind(), error.to_string()),
+    })
 }
 
 /// Clone an [`InputError`] so it can be re-wrapped for `Display`.

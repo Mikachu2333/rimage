@@ -1112,35 +1112,27 @@ fn main() -> std::process::ExitCode {
                         #[cfg(feature = "limits")]
                         fail_pipeline!(state, check_output_limits(&output, &img, subcommand));
 
-                        fail_file!(
-                            output,
-                            state,
-                            output,
-                            prepare_output_parent(&output, output_root.as_deref())
-                        );
+                        fail_pipeline!(state, prepare_output_parent(&output, output_root.as_deref())
+                            .map_err(|e| rimage::error::output_io_error(&output, &e)));
                         let (temporary, output_file) =
-                            fail_file!(output, state, output, TemporaryOutput::new(&output));
+                            fail_pipeline!(state, TemporaryOutput::new(&output)
+                                .map_err(|e| rimage::error::output_io_error(&output, &e)));
 
-                        fail_file!(output, state, output, available_encoder.encode(&img, output_file));
+                        fail_pipeline!(state, available_encoder
+                            .encode(&img, output_file)
+                            .map_err(|e| rimage::error::output_encode_error(&output, subcommand, &e)));
 
                         if output_format == "jpg"
                             && let Some(raw_exif) = raw_exif_app1
                         {
-                            fail_file!(
-                                output,
-                                state,
-                                temporary.path,
-                                insert_jpeg_exif_app1(&temporary.path, &raw_exif)
-                            );
+                            fail_pipeline!(state, insert_jpeg_exif_app1(&temporary.path, &raw_exif)
+                                .map_err(|e| rimage::error::output_io_error(&temporary.path, &e)));
                         }
 
                         if let Some(actual_metadata) = exif_metadata {
-                            fail_file!(
-                                output,
-                                state,
-                                temporary.path,
-                                actual_metadata.write_to_file(&temporary.path)
-                            );
+                            fail_pipeline!(state, actual_metadata
+                                .write_to_file(&temporary.path)
+                                .map_err(|e| rimage::error::output_io_error(&temporary.path, &e)));
                         }
 
                         if let Some(backup_path) = backup_path.as_deref() {
@@ -1172,10 +1164,14 @@ fn main() -> std::process::ExitCode {
                                 );
                             }
                         } else {
-                            fail_file!(output, state, output, temporary.publish(&output));
+                            fail_pipeline!(state, temporary
+                                .publish(&output)
+                                .map_err(|e| rimage::error::output_io_error(&output, &e)));
                         }
 
-                        let output_size = fail_file!(output, state, output, output.metadata()).len();
+                        let output_size = fail_pipeline!(state, output
+                            .metadata()
+                            .map_err(|e| rimage::error::output_io_error(&output, &e))).len();
                         let processing_time = image_start_time.elapsed().as_millis();
                         let compression_ratio = size_ratio(output_size, input_size);
                         let space_saved = space_saved(input_size, output_size);
