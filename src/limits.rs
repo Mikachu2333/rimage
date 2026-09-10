@@ -20,7 +20,7 @@
 //! values that the format specifications themselves mandate, plus the
 //! documented estimates in [`PipelineCost`].
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use zune_core::{bit_depth::BitDepth, colorspace::ColorSpace};
 
@@ -365,14 +365,18 @@ fn probe_available_memory() -> u64 {
 /// Free bytes on the volume holding `path`, if it can be determined.
 ///
 /// Resolved by longest mount-point prefix so the answer reflects the volume the
-/// output actually lands on, not the working directory. Returns `None` when the
-/// path does not exist yet, is on an unenumerated volume, or the platform
-/// cannot report it; callers must treat that as "unknown", not "zero".
+/// output actually lands on, not the working directory. `path` usually does not
+/// exist yet — it is the output being *planned* — so the lookup walks up to the
+/// nearest ancestor that does and canonicalizes that; a plain
+/// `path.canonicalize()` would fail on exactly the new-output-file case this
+/// function exists for. Returns `None` when no ancestor exists, the volume is
+/// not enumerated, or the platform cannot report it; callers must treat that
+/// as "unknown", not "zero".
 #[cfg(feature = "limits")]
 pub fn free_space_at(path: &Path) -> Option<u64> {
     use sysinfo::Disks;
 
-    let target = path.canonicalize().ok()?;
+    let target = canonicalize_existing_ancestor(path)?;
 
     Disks::new_with_refreshed_list()
         .list()
@@ -380,6 +384,45 @@ pub fn free_space_at(path: &Path) -> Option<u64> {
         .filter(|disk| target.starts_with(disk.mount_point()))
         .max_by_key(|disk| disk.mount_point().as_os_str().len())
         .map(|disk| disk.available_space())
+}
+
+/// Canonicalize the nearest ancestor of `path` that exists.
+///
+/// The verbatim (`\\?\`) prefix `canonicalize` produces on Windows is stripped
+/// because sysinfo reports mount points in the ordinary `C:\` form; comparing
+/// the verbatim form against them would never match and silently disable the
+/// free-space check on all of Windows.
+#[cfg(feature = "limits")]
+fn canonicalize_existing_ancestor(path: &Path) -> Option<PathBuf> {
+    let mut candidate = Some(path);
+    while let Some(current) = candidate {
+        if let Ok(canonical) = current.canonicalize() {
+            return Some(strip_verbatim_prefix(&canonical));
+        }
+        candidate = current.parent();
+    }
+    None
+}
+
+/// Strip the Windows verbatim (`\\?\`) prefix from a canonicalized path.
+///
+/// `\\?\UNC\server\share` is restored to the regular UNC form. Paths without
+/// the prefix — and every path on non-Windows platforms — are returned
+/// unchanged.
+#[cfg(feature = "limits")]
+fn strip_verbatim_prefix(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(s) = path.to_str() {
+            if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+                return PathBuf::from(format!(r"\\{rest}"));
+            }
+            if let Some(rest) = s.strip_prefix(r"\\?\") {
+                return PathBuf::from(rest);
+            }
+        }
+    }
+    path.to_path_buf()
 }
 
 /// Free bytes on the volume holding `path`, if it can be determined.
