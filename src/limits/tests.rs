@@ -249,6 +249,38 @@ fn binding_descriptions_are_not_empty() {
     }
 }
 
+/// The free-space probe must answer for the case it exists for: an output file
+/// that does not exist yet, in a directory that does. A bare `canonicalize` on
+/// the file itself fails here, which used to silently disable the check.
+#[cfg(feature = "limits")]
+#[test]
+fn free_space_is_found_for_a_not_yet_created_output() {
+    let missing_output = std::env::temp_dir().join(format!(
+        "rimage-limits-{}-not-created-yet/out.png",
+        std::process::id()
+    ));
+
+    let free = free_space_at(&missing_output);
+    assert!(
+        free.is_some(),
+        "free space under the temp dir must be determinable"
+    );
+    assert!(free.unwrap() > 0);
+}
+
+/// Even when several trailing components are missing, the probe walks up to
+/// the nearest existing ancestor instead of giving up.
+#[cfg(feature = "limits")]
+#[test]
+fn free_space_walks_up_past_missing_directories() {
+    let deep = std::env::temp_dir().join(format!(
+        "rimage-limits-{}/missing/deeper/out.png",
+        std::process::id()
+    ));
+
+    assert!(free_space_at(&deep).is_some());
+}
+
 /// An image beyond the decoder's ceiling must be rejected before any decoding
 /// is attempted, on every realistic memory budget.
 ///
