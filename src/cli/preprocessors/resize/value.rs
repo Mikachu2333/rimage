@@ -143,12 +143,25 @@ impl std::str::FromStr for ResizeValue {
             s if s.contains('x') => {
                 let dimensions: Vec<&str> = s.split('x').collect();
                 if dimensions.len() > 2 {
-                    return Err(anyhow!("There is more that 2 dimensions"));
+                    return Err(anyhow!("There is more than 2 dimensions"));
                 }
 
-                let width = Some(dimensions[0].parse::<usize>()?);
+                // An empty dimension half (e.g. "x100" or "100x") produces a
+                // parse error with an unhelpful message. Surface a clear
+                // error naming the missing value.
+                let width = Some(dimensions[0].parse::<usize>().map_err(|_| {
+                    anyhow!(
+                        "Invalid resize width '{}': expected a positive integer",
+                        dimensions[0]
+                    )
+                })?);
 
-                let height = Some(dimensions[1].parse::<usize>()?);
+                let height = Some(dimensions[1].parse::<usize>().map_err(|_| {
+                    anyhow!(
+                        "Invalid resize height '{}': expected a positive integer",
+                        dimensions[1]
+                    )
+                })?);
 
                 Ok(Self::Dimensions(width, height))
             }
