@@ -1189,7 +1189,11 @@ pub fn encoder(name: &str, matches: &ArgMatches) -> Result<AvailableEncoders, Im
         "webp" => {
             use rimage::codecs::webp::WebPOptions;
 
-            let mut options = WebPOptions::new().unwrap();
+            let mut options = WebPOptions::new().map_err(|_| {
+                ImageErrors::GenericString(
+                    "libwebp encoder configuration failed to initialize".to_string(),
+                )
+            })?;
 
             options.quality = matches.get_one::<u8>("quality").copied().unwrap_or(75) as f32;
             options.lossless = matches.get_flag("lossless") as i32;
