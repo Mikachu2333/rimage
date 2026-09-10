@@ -134,5 +134,12 @@ pub mod codecs;
 /// [`limits::SystemBudget`] and [`limits::LimitSet`].
 pub mod limits;
 
+/// Structured, side-tagged pipeline errors.
+///
+/// Wraps [`zune_image::errors::ImageErrors`] so a failure can say whether it
+/// happened reading the input or writing the output, and which format was
+/// involved. See [`error::RimageError`].
+pub mod error;
+
 #[cfg(test)]
 mod test_utils;
