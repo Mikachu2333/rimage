@@ -8,20 +8,33 @@
 # omitted and the target differs from the host: CC, AR.
 set -euo pipefail
 
+if [[ $# -lt 1 ]]; then
+    echo "Usage: build-dav1d.sh <install-prefix> [meson-cross-file]" >&2
+    exit 2
+fi
+
 prefix=$1
 version=1.5.1
+# Commit the 1.5.1 tag pointed at when this pin was written. A tag can be
+# re-pointed upstream; verifying the checkout keeps the build reproducible.
+commit=3060ebf8dd26952579373084984daf70a54f5368
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 git clone --depth 1 --branch "$version" \
     https://code.videolan.org/videolan/dav1d.git "$work/dav1d"
+if [[ $(git -C "$work/dav1d" rev-parse HEAD) != "$commit" ]]; then
+    echo "build-dav1d: tag $version no longer points at the pinned commit $commit" >&2
+    exit 1
+fi
 
 # dav1d 1.5.x spells these options enable_tools/enable_tests; the shorter
 # tools/build_tests names are rejected as unknown project options
 args=(-Ddefault_library=static -Denable_tools=false -Denable_tests=false -Dlibdir=lib --prefix="$prefix")
 if [[ $# -gt 1 ]]; then
-    args+=(--cross-file "$(realpath "$2")")
+    # realpath(1) is GNU-only; cd+pwd resolves the cross file on macOS too.
+    args+=(--cross-file "$(cd "$(dirname "$2")" && pwd)/$(basename "$2")")
 fi
 
 # options must not sit between meson setup's two positional arguments:
