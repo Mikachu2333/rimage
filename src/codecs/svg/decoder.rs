@@ -114,6 +114,25 @@ impl SvgDecoder {
         R: Read,
         F: FnOnce((usize, usize)) -> Result<Option<(u32, u32)>, ImageErrors>,
     {
+        Self::try_new_with_resize_and_budget(source, resources_dir, None, target_for_size)
+    }
+
+    /// Same as [`SvgDecoder::try_new_with_resize`], but with an explicit pixel
+    /// budget instead of the module's fallback constant.
+    ///
+    /// Callers that can probe the machine pass a limit derived from
+    /// [`crate::limits::SystemBudget`] here, so an SVG render target is bounded
+    /// by the same memory model every other format uses.
+    pub fn try_new_with_resize_and_budget<R, F>(
+        source: R,
+        resources_dir: Option<PathBuf>,
+        pixel_budget: Option<u64>,
+        target_for_size: F,
+    ) -> Result<Self, ImageErrors>
+    where
+        R: Read,
+        F: FnOnce((usize, usize)) -> Result<Option<(u32, u32)>, ImageErrors>,
+    {
         let tree = parse_tree(source, resources_dir.clone())?;
         let size = tree.size();
         let intrinsic = (
@@ -125,7 +144,7 @@ impl SvgDecoder {
             &SvgOptions {
                 resources_dir,
                 target_size,
-                pixel_budget: None,
+                pixel_budget,
             },
             size,
         )?;

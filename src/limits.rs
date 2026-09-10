@@ -145,6 +145,23 @@ impl ImageFormatId {
             ImageFormatId::Other
         }
     }
+
+    /// Map a CLI encoder name to a format identity.
+    ///
+    /// These are the subcommand names, which do not always match the file
+    /// extension: `mozjpeg` writes a `.jpg`, and `oxipng` writes a `.png`.
+    /// Output limits must be looked up by what will actually be written, so
+    /// the encoder name is the right key here rather than the path suffix.
+    pub fn from_encoder_name(name: &str) -> Self {
+        match name {
+            "mozjpeg" | "jpeg" => ImageFormatId::Jpeg,
+            "oxipng" | "png" => ImageFormatId::Png,
+            "webp" => ImageFormatId::WebP,
+            "avif" => ImageFormatId::Avif,
+            "tiff" => ImageFormatId::Tiff,
+            _ => ImageFormatId::Other,
+        }
+    }
 }
 
 /// Fraction of the reported free memory this process is willing to spend.
@@ -364,6 +381,14 @@ pub struct LimitSet {
     pub max_bytes: u64,
     /// Which constraint produced the tightest `max_pixels`, for messages.
     pub binding: Binding,
+    /// Which constraint produced `max_bytes`.
+    ///
+    /// Tracked separately from `binding` because the two ceilings are bounded
+    /// by different sources: the pixel ceiling is never set by free space, and
+    /// the byte ceiling is only meaningful as a disk statement when free space
+    /// is what tightened it. Collapsing them into one field made a memory
+    /// budget get reported as a disk limit.
+    pub bytes_binding: Binding,
 }
 
 /// Which of the three sources ended up being the tightest constraint.
@@ -435,6 +460,7 @@ impl LimitSet {
             max_pixels,
             max_bytes: budget_bytes.saturating_mul(cost.total().max(1)),
             binding,
+            bytes_binding: Binding::Memory,
         }
     }
 
@@ -461,7 +487,7 @@ impl LimitSet {
             let allowed = usable / 2;
             if allowed < limits.max_bytes {
                 limits.max_bytes = allowed;
-                limits.binding = Binding::Disk;
+                limits.bytes_binding = Binding::Disk;
             }
         }
 
@@ -506,6 +532,26 @@ impl LimitSet {
         Ok(())
     }
 
+    /// Check an estimated byte footprint against the byte ceiling.
+    ///
+    /// Distinct from [`LimitSet::check`] because the two ceilings answer
+    /// different questions: `check` asks whether the pixels fit in *memory*,
+    /// this asks whether the result fits on *disk*. A small-pixel image in a
+    /// pathological format can still exhaust a volume, and a huge one may fit
+    /// on disk while never surviving the decode.
+    pub fn check_bytes(&self, bytes: u64) -> Result<(), LimitViolation> {
+        if bytes > self.max_bytes {
+            return Err(LimitViolation {
+                kind: ViolationKind::Bytes,
+                actual: bytes,
+                allowed: self.max_bytes,
+                binding: self.bytes_binding,
+            });
+        }
+
+        Ok(())
+    }
+
     /// Largest square side that satisfies the pixel ceiling.
     ///
     /// Used to suggest a concrete `--resize` value in error messages.
@@ -524,6 +570,8 @@ pub enum ViolationKind {
     Height,
     /// `width * height`.
     Pixels,
+    /// An estimated byte footprint, bounded by free space on the volume.
+    Bytes,
 }
 
 /// A concrete limit that was exceeded.

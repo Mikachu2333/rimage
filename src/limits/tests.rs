@@ -8,6 +8,22 @@ fn budget_with(memory: u64, concurrency: usize) -> SystemBudget {
     }
 }
 
+/// Build a `LimitSet` for the `check` tests, whose subject is the pixel
+/// ceilings. The byte ceiling is left unbounded so it cannot accidentally
+/// become the thing under test.
+fn pixel_limits(
+    max_width: u64, max_height: u64, max_pixels: u64, binding: Binding,
+) -> LimitSet {
+    LimitSet {
+        max_width,
+        max_height,
+        max_pixels,
+        max_bytes: u64::MAX,
+        binding,
+        bytes_binding: Binding::Memory,
+    }
+}
+
 #[test]
 fn webp_cap_matches_libwebp_constant() {
     let caps = format_caps(ImageFormatId::WebP);
@@ -110,13 +126,7 @@ fn format_cap_binds_when_memory_is_plentiful() {
 
 #[test]
 fn check_reports_width_before_pixels() {
-    let limits = LimitSet {
-        max_width: 100,
-        max_height: 200,
-        max_pixels: 10_000,
-        max_bytes: u64::MAX,
-        binding: Binding::Format,
-    };
+    let limits = pixel_limits(100, 200, 10_000, Binding::Format);
 
     // The area passes, so only the side check can reject this input.
     let violation = limits.check(101, 10).unwrap_err();
@@ -127,13 +137,7 @@ fn check_reports_width_before_pixels() {
 
 #[test]
 fn check_reports_pixels_before_a_side() {
-    let limits = LimitSet {
-        max_width: 100,
-        max_height: 100,
-        max_pixels: 1_000,
-        max_bytes: u64::MAX,
-        binding: Binding::Memory,
-    };
+    let limits = pixel_limits(100, 100, 1_000, Binding::Memory);
 
     // Both a side and the area are too large. The area is reported because it
     // is the tighter description, and it carries the binding that produced it.
@@ -144,13 +148,7 @@ fn check_reports_pixels_before_a_side() {
 
 #[test]
 fn check_reports_height() {
-    let limits = LimitSet {
-        max_width: 100,
-        max_height: 200,
-        max_pixels: 10_000,
-        max_bytes: u64::MAX,
-        binding: Binding::Format,
-    };
+    let limits = pixel_limits(100, 200, 10_000, Binding::Format);
 
     let violation = limits.check(10, 201).unwrap_err();
     assert_eq!(violation.kind, ViolationKind::Height);
@@ -158,13 +156,7 @@ fn check_reports_height() {
 
 #[test]
 fn check_reports_pixel_product_when_both_sides_pass() {
-    let limits = LimitSet {
-        max_width: 1000,
-        max_height: 1000,
-        max_pixels: 10_000,
-        max_bytes: u64::MAX,
-        binding: Binding::Memory,
-    };
+    let limits = pixel_limits(1000, 1000, 10_000, Binding::Memory);
 
     // Each side is legal; only the product exceeds the ceiling.
     let violation = limits.check(500, 500).unwrap_err();
@@ -177,26 +169,14 @@ fn check_reports_pixel_product_when_both_sides_pass() {
 
 #[test]
 fn check_accepts_the_exact_limit() {
-    let limits = LimitSet {
-        max_width: 500,
-        max_height: 500,
-        max_pixels: 250_000,
-        max_bytes: u64::MAX,
-        binding: Binding::Format,
-    };
+    let limits = pixel_limits(500, 500, 250_000, Binding::Format);
 
     assert!(limits.check(500, 500).is_ok());
 }
 
 #[test]
 fn suggested_side_fits_under_every_ceiling() {
-    let limits = LimitSet {
-        max_width: 16383,
-        max_height: 16383,
-        max_pixels: 10_000_000,
-        max_bytes: u64::MAX,
-        binding: Binding::Memory,
-    };
+    let limits = pixel_limits(16383, 16383, 10_000_000, Binding::Memory);
 
     let side = limits.suggested_side();
     assert!(side <= limits.max_width);
@@ -206,12 +186,15 @@ fn suggested_side_fits_under_every_ceiling() {
 
 #[test]
 fn suggested_side_is_at_least_one() {
+    // Every ceiling is zero, including the byte one: the suggestion still has
+    // to be a legal size rather than zero.
     let limits = LimitSet {
         max_width: 0,
         max_height: 0,
         max_pixels: 0,
         max_bytes: 0,
         binding: Binding::Memory,
+        bytes_binding: Binding::Memory,
     };
 
     assert_eq!(limits.suggested_side(), 1);
@@ -322,4 +305,59 @@ fn extreme_dimensions_are_rejected_by_the_jpeg_ceiling() {
     // A square that both the format and the memory budget can express is
     // accepted, so the checks do not reject everything indiscriminately.
     assert!(limits(TYPICAL).check(16_000, 16_000).is_ok());
+}
+
+#[test]
+fn encoder_names_map_to_the_format_they_write() {
+    // The CLI subcommand is not the file extension: `mozjpeg` writes a `.jpg`
+    // and `oxipng` writes a `.png`. Looking output limits up by subcommand is
+    // what makes them describe the file that actually lands on disk.
+    assert_eq!(ImageFormatId::from_encoder_name("mozjpeg"), ImageFormatId::Jpeg);
+    assert_eq!(ImageFormatId::from_encoder_name("jpeg"), ImageFormatId::Jpeg);
+    assert_eq!(ImageFormatId::from_encoder_name("oxipng"), ImageFormatId::Png);
+    assert_eq!(ImageFormatId::from_encoder_name("png"), ImageFormatId::Png);
+    assert_eq!(ImageFormatId::from_encoder_name("webp"), ImageFormatId::WebP);
+    assert_eq!(ImageFormatId::from_encoder_name("avif"), ImageFormatId::Avif);
+    assert_eq!(ImageFormatId::from_encoder_name("tiff"), ImageFormatId::Tiff);
+    assert_eq!(ImageFormatId::from_encoder_name("qoi"), ImageFormatId::Other);
+}
+
+#[test]
+fn check_bytes_reports_the_byte_binding() {
+    let limits = LimitSet {
+        max_width: u64::MAX,
+        max_height: u64::MAX,
+        max_pixels: u64::MAX,
+        max_bytes: 1024,
+        binding: Binding::Format,
+        bytes_binding: Binding::Disk,
+    };
+
+    let violation = limits.check_bytes(2048).unwrap_err();
+    assert_eq!(violation.kind, ViolationKind::Bytes);
+    assert_eq!(violation.actual, 2048);
+    assert_eq!(violation.allowed, 1024);
+
+    // The byte ceiling reports *its own* binding, not the pixel one. Mixing
+    // them made a full volume report itself as a format limit.
+    assert_eq!(violation.binding, Binding::Disk);
+
+    assert!(limits.check_bytes(1024).is_ok());
+}
+
+#[test]
+fn byte_and_pixel_bindings_are_tracked_separately() {
+    // A limit set whose pixels are format-bound but whose bytes are disk-bound
+    // must answer each question with the right source.
+    let limits = LimitSet {
+        max_width: 100,
+        max_height: 100,
+        max_pixels: 10_000,
+        max_bytes: 4096,
+        binding: Binding::Format,
+        bytes_binding: Binding::Disk,
+    };
+
+    assert_eq!(limits.check(101, 1).unwrap_err().binding, Binding::Format);
+    assert_eq!(limits.check_bytes(8192).unwrap_err().binding, Binding::Disk);
 }
