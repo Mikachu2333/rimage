@@ -1,3 +1,4 @@
+#[cfg(any(feature = "avif", feature = "webp", feature = "svg", feature = "tiff"))]
 use std::io::{Seek, SeekFrom};
 use std::{collections::BTreeMap, fs::File, path::Path};
 
@@ -573,12 +574,13 @@ fn svg_pixel_budget(matches: &ArgMatches) -> Option<u64> {
 ///
 /// Split out of [`decode`] so the fallback chain stays readable and so the
 /// conversion to [`rimage::error::RimageError`] happens in exactly one place.
+#[allow(unused_variables)]
 fn decode_with_fallback(
     path: &Path, matches: &ArgMatches, e: ImageErrors,
 ) -> Result<Image, ImageErrors> {
     {
         if matches!(e, ImageErrors::ImageDecoderNotImplemented(_)) {
-            #[cfg(any(feature = "avif", feature = "webp", feature = "svg"))]
+            #[cfg(any(feature = "avif", feature = "webp", feature = "svg", feature = "tiff"))]
             let mut file = File::open(path)?;
 
             #[cfg(feature = "svg")]
@@ -1001,10 +1003,13 @@ impl AvailableEncoders {
             AvailableEncoders::FarbFeld(enc) => enc.encode(img, sink),
             AvailableEncoders::Jpeg(enc) => enc.encode(img, sink),
             AvailableEncoders::JpegXl(enc) => enc.encode(img, sink),
+            #[cfg(feature = "mozjpeg")]
             AvailableEncoders::MozJpeg(enc) => enc.encode(img, sink),
+            #[cfg(feature = "oxipng")]
             AvailableEncoders::OxiPng(enc) => enc.encode(img, sink),
             #[cfg(feature = "avif")]
             AvailableEncoders::Avif(enc) => enc.encode(img, sink),
+            #[cfg(feature = "webp")]
             AvailableEncoders::Webp(enc) => enc.encode(img, sink),
             AvailableEncoders::Png(enc) => enc.encode(img, sink),
             AvailableEncoders::Ppm(enc) => enc.encode(img, sink),
