@@ -7,9 +7,11 @@
 //!
 //! The values follow the conventional Unix convention of `0` for success and a
 //! small non-zero number for each category. `1` is deliberately not used for a
-//! specific meaning: it is what the runtime reports when the process dies from
-//! a signal or an abort, so reusing it would make a crash indistinguishable
-//! from a handled failure.
+//! specific meaning: it is the generic "something failed" code countless tools
+//! already emit, so reusing it would make a handled failure indistinguishable
+//! from an unhandled one. (Crashes never produce `1` anyway: a Rust panic
+//! exits as `101`, and a signal death is reported by the shell as `128+SIG` —
+//! `134` for the abort that `panic = "abort"` raises.)
 
 /// How the process ended.
 ///
