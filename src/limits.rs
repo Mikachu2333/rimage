@@ -626,7 +626,7 @@ impl LimitSet {
     ///
     /// Used to suggest a concrete `--resize` value in error messages.
     pub fn suggested_side(&self) -> u64 {
-        let by_pixels = integer_sqrt(self.max_pixels);
+        let by_pixels = self.max_pixels.isqrt();
         by_pixels.min(self.max_width).min(self.max_height).max(1)
     }
 }
@@ -672,14 +672,6 @@ pub fn bytes_per_pixel(depth: BitDepth, colorspace: ColorSpace) -> u64 {
     };
 
     (components * bytes_per_component).max(1)
-}
-
-/// Integer square root.
-///
-/// Delegates to `u64::isqrt`, which has been stable since Rust 1.79 and
-/// the project's MSRV (1.95.0) is well above that.
-fn integer_sqrt(value: u64) -> u64 {
-    value.isqrt()
 }
 
 #[cfg(test)]
