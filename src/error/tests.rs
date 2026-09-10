@@ -347,6 +347,11 @@ fn err_kinds_are_unique_per_variant() {
             requested: (1, 1),
             reason: "x",
         }),
+        RimageError::Input(InputError::Configuration {
+            path: PathBuf::from("a"),
+            format: ImageFormatId::Jpeg,
+            cause: decode_failure(),
+        }),
         RimageError::Output(OutputError::Io {
             path: PathBuf::from("a"),
             cause: std::io::Error::other("x"),
@@ -501,4 +506,56 @@ fn an_error_without_a_hint_still_formats() {
 
     assert!(error.hint().is_none());
     assert_eq!(error.kind(), "output.io");
+}
+
+#[test]
+fn input_open_error_classifies_io_failures_on_the_input_side() {
+    let error = input_open_error(
+        &jpeg_path(),
+        &std::io::Error::new(std::io::ErrorKind::NotFound, "gone"),
+    );
+
+    assert_eq!(error.direction(), Direction::Input);
+    assert_eq!(error.kind(), "input.open");
+    assert_eq!(error.path(), jpeg_path());
+    assert!(error.hint().unwrap().contains("exists"));
+}
+
+#[test]
+fn input_config_error_tags_the_format_from_the_encoder_name() {
+    let cause = ImageErrors::GenericString(
+        "Unsupported mozjpeg colorspace: neon".to_string(),
+    );
+
+    let error = input_config_error(&jpeg_path(), "mozjpeg", &cause);
+
+    assert_eq!(error.direction(), Direction::Input);
+    assert_eq!(error.kind(), "input.configuration");
+    let message = error.to_string();
+    assert!(message.contains("photo.jpg"), "{message}");
+    assert!(message.contains("jpeg"), "{message}");
+    assert!(message.contains("neon"), "{message}");
+    // The cause already explains the bad value, so no generic hint is added.
+    assert!(error.hint().is_none());
+}
+
+#[test]
+fn input_operation_error_routes_resize_failures_to_invalid_resize() {
+    let error = ImageErrors::ImageOperationNotImplemented("resize", depth_of_first_supported());
+
+    let classified = input_operation_error(&jpeg_path(), &error);
+
+    assert_eq!(classified.kind(), "input.decode");
+    // Without caller context the resize failure degrades to a decode label,
+    // but the error is not lost.
+    assert!(classified.to_string().contains("photo.jpg"));
+}
+
+#[test]
+fn a_configuration_error_preserves_its_cause_as_source() {
+    let cause = ImageErrors::GenericString("bad value".to_string());
+
+    let error = input_config_error(&jpeg_path(), "mozjpeg", &cause);
+
+    assert!(std::error::Error::source(&error).is_some());
 }

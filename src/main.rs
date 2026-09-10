@@ -37,43 +37,10 @@ use crate::cli::pipeline::encoder;
 
 mod cli;
 
-/// Report a failure and abandon the current file.
-///
-/// The `side` argument says whether the failure happened reading the input or
-/// writing the output, which is what lets the run end with a code that names
-/// the side. It is passed explicitly rather than inferred so a call site cannot
-/// be mislabelled by accident.
-///
-/// The failure is recorded on the shared [`ProcessingState`] before returning,
-/// so the end-of-run summary can count the sides separately and the process can
-/// exit with the code that matches.
-macro_rules! fail_file {
-    ( input, $state:expr, $path:expr, $e:expr ) => {
-        match $e {
-            Ok(v) => v,
-            Err(e) => {
-                record_failure(&$state, rimage::exit::ExitCode::Input);
-                log::error!("{}: {e}", $path.display());
-                return;
-            }
-        }
-    };
-    ( output, $state:expr, $path:expr, $e:expr ) => {
-        match $e {
-            Ok(v) => v,
-            Err(e) => {
-                record_failure(&$state, rimage::exit::ExitCode::Output);
-                log::error!("{}: {e}", $path.display());
-                return;
-            }
-        }
-    };
-}
-
 /// Report a structured pipeline failure and abandon the current file.
 ///
-/// Unlike [`fail_file!`] the side comes from the error itself, and the message
-/// carries the hint the `error` module derived for it.
+/// The side comes from the error itself (`RimageError::direction`), and the
+/// message carries the hint the `error` module derived for it.
 macro_rules! fail_pipeline {
     ( $state:expr, $e:expr ) => {
         match $e {
@@ -930,7 +897,7 @@ fn main() -> std::process::ExitCode {
                         pb.enable_steady_tick(Duration::from_millis(100));
 
                         // Advance progress bars on all exit paths (including the
-                        // early returns from the `fail_file!` calls below).
+                        // early returns from the `fail_pipeline!` calls below).
                         let _finish = FinishGuard {
                             pb: pb.clone(),
                             pb_main: pb_main.clone(),
@@ -989,7 +956,9 @@ fn main() -> std::process::ExitCode {
 
                         let mut ops: Vec<Box<dyn OperationsTrait>> = Vec::new();
 
-                        let input_size = fail_file!(input, state, input, input.metadata()).len();
+                        let input_size = fail_pipeline!(state, input
+                            .metadata()
+                            .map_err(|e| rimage::error::input_open_error(&input, &e))).len();
                         let input_format = get_file_extension(&input);
                         let input_modified = get_file_modified_time(&input);
 
@@ -1070,7 +1039,8 @@ fn main() -> std::process::ExitCode {
                         let original_bit_depth = img.depth();
 
                         let mut available_encoder =
-                            fail_file!(input, state, input, encoder(subcommand, matches));
+                            fail_pipeline!(state, encoder(subcommand, matches)
+                                .map_err(|e| rimage::error::input_config_error(&input, subcommand, &e)));
                         let output_format = available_encoder.to_extension().to_string();
 
                         available_encoder.set_jfif_density(jfif_density);
@@ -1097,7 +1067,9 @@ fn main() -> std::process::ExitCode {
                             });
 
                         for op in ops {
-                            fail_file!(input, state, input, op.execute(&mut img));
+                            fail_pipeline!(state, op
+                                .execute(&mut img)
+                                .map_err(|e| rimage::error::input_operation_error(&input, &e)));
                         }
 
                         pb.set_style(sty_aux_encode.clone());
