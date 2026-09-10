@@ -214,3 +214,6 @@ pub fn insert_jpeg_exif_app1(path: &Path, exif_payload: &[u8]) -> io::Result<()>
 
     std::fs::write(path, out)
 }
+
+#[cfg(test)]
+mod tests;
