@@ -1,5 +1,8 @@
 use std::io::{Seek, SeekFrom};
-use std::{collections::BTreeMap, fs::File, io::Read, path::Path};
+use std::{collections::BTreeMap, fs::File, path::Path};
+
+#[cfg(feature = "avif")]
+use std::io::Read;
 
 #[cfg(feature = "resize")]
 use crate::cli::preprocessors::ResizeValue;
@@ -17,7 +20,7 @@ use rimage::codecs::svg::SvgDecoder;
 use rimage::codecs::svg::SvgOptions;
 #[cfg(feature = "webp")]
 use rimage::codecs::webp::WebPEncoder;
-use zune_core::{bytestream::ZByteWriterTrait, options::EncoderOptions};
+use zune_core::{bytestream::ZByteWriterTrait, options::DecoderOptions, options::EncoderOptions};
 use zune_image::{
     codecs::{
         ImageFormat, farbfeld::FarbFeldEncoder, jpeg::JpegEncoder, jpeg_xl::JxlEncoder,
@@ -30,21 +33,168 @@ use zune_image::{
 };
 use zune_imageprocs::premul_alpha::PremultiplyAlpha;
 
+/// Decoder options shared by every path in [`decode`].
+///
+/// The defaults are wrong for this program in one specific way: zune decodes
+/// *every* frame of an animated PNG or JXL. We only ever re-encode a single
+/// still image, and an animation holds one full-size buffer per frame, so
+/// decoding the frames we are about to discard is pure memory waste. Asking for
+/// the first frame only keeps peak memory proportional to one image.
+///
+/// The maximum dimensions are deliberately left at the library default rather
+/// than pinned to a constant here: the size limit is derived at runtime by
+/// `rimage::limits`, and hard-coding a second, different ceiling in this file
+/// would give the two a way to disagree.
+fn decode_options() -> DecoderOptions {
+    DecoderOptions::default()
+        .png_set_decode_animated(false)
+        .jxl_set_decode_animated(false)
+}
+
+/// Reject an image whose header declares dimensions the machine cannot hold.
+///
+/// This runs *before* any decoding so an oversized file fails with a message
+/// naming the ceiling instead of an allocation abort somewhere inside a codec.
+/// The header is all that is read, so the check costs a few kilobytes even for
+/// an image that is gigabytes when decoded.
+///
+/// Returns `Ok(())` when the format has no readable dimensions for us (an SVG
+/// render target, for instance, which is bounded separately) or when they fit.
+/// The failure is a [`RimageError`] rather than an [`ImageErrors`] because the
+/// violation is resolved here and would otherwise have to be re-parsed out of a
+/// string to be reported.
+#[cfg(feature = "limits")]
+fn check_input_limits(path: &Path) -> Result<(), rimage::error::RimageError> {
+    use rimage::limits::{ImageFormatId, LimitSet, PipelineCost, SystemBudget};
+
+    let extension = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default();
+    let format = ImageFormatId::from_extension(extension);
+
+    // Only worth probing for formats we can size up front. Anything else is
+    // rejected later by the decoder or by the SVG point budget. A file that
+    // cannot even be opened is left for the decode step to report, so the
+    // missing-file message keeps coming from one place.
+    let Ok(reader) = File::open(path) else {
+        return Ok(());
+    };
+
+    let Some((width, height)) = probe_dimensions(reader, format) else {
+        return Ok(());
+    };
+
+    let budget = SystemBudget::probe(concurrency_from_env());
+    let limits = LimitSet::for_input(
+        format,
+        zune_core::bit_depth::BitDepth::Eight,
+        zune_core::colorspace::ColorSpace::RGB,
+        &budget,
+        PipelineCost::for_encoder(format),
+    );
+
+    limits
+        .check(width, height)
+        .map_err(|violation| {
+            rimage::error::input_size_limit(path, format, Some((width, height)), violation)
+        })
+}
+
+/// Read just the dimensions from an image header.
+///
+/// Only JPEG is handled here. It is the format with a published per-side limit
+/// that a header read can settle cheaply, and it is the one the task names for
+/// the extreme case. Other formats are bounded by memory alone, which the
+/// decoders enforce on the buffer they actually allocate; probing their headers
+/// here would duplicate that check without adding a format limit.
+#[cfg(feature = "limits")]
+fn probe_dimensions<R: std::io::Read>(
+    mut reader: R, format: rimage::limits::ImageFormatId,
+) -> Option<(u64, u64)> {
+    use rimage::limits::ImageFormatId;
+    use zune_core::bytestream::ZCursor;
+
+    match format {
+        ImageFormatId::Jpeg => {
+            // A JPEG header sits at the front of the file, so only a prefix is
+            // needed. Reading a bounded prefix rather than the whole file is
+            // what keeps rejecting an oversized input cheap.
+            let mut prefix = vec![0u8; JPEG_HEADER_PROBE_BYTES];
+            let mut filled = 0;
+            while filled < prefix.len() {
+                match reader.read(&mut prefix[filled..]) {
+                    Ok(0) => break,
+                    Ok(read) => filled += read,
+                    Err(_) => return None,
+                }
+            }
+            prefix.truncate(filled);
+
+            let mut decoder =
+                zune_image::codecs::jpeg::JpegDecoder::new(ZCursor::new(prefix));
+            decoder.decode_headers().ok()?;
+            let (width, height) = decoder.dimensions()?;
+            Some((width as u64, height as u64))
+        }
+        _ => None,
+    }
+}
+
+/// Bytes of a file read to recover a JPEG frame header.
+///
+/// The frame header follows the application segments (EXIF, ICC, XMP), which
+/// can be large but are almost never larger than this. A file whose header
+/// falls beyond the prefix simply is not pre-checked, and the decoder reports
+/// the problem instead.
+#[cfg(feature = "limits")]
+const JPEG_HEADER_PROBE_BYTES: usize = 64 * 1024;
+
+/// The concurrency the pipeline will actually use, read from the same argument
+/// the worker pool is sized from.
+///
+/// Defaults to 1, matching `--threads`.
+#[cfg(feature = "limits")]
+fn concurrency_from_env() -> usize {
+    std::env::var("RIMAGE_THREADS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|threads| *threads > 0)
+        .unwrap_or(1)
+}
+
 #[allow(unused_variables)]
 #[allow(unused_mut)]
-pub fn decode<P: AsRef<Path>>(f: P, matches: &ArgMatches) -> Result<Image, ImageErrors> {
-    Image::open(f.as_ref()).or_else(|e| {
+pub fn decode<P: AsRef<Path>>(f: P, matches: &ArgMatches) -> Result<Image, rimage::error::RimageError> {
+    // The size pre-check already knows which ceiling it broke, so it produces
+    // the structured error directly instead of round-tripping through a string.
+    #[cfg(feature = "limits")]
+    check_input_limits(f.as_ref())?;
+
+    Image::open_with_options(f.as_ref(), decode_options())
+        .or_else(|e| decode_with_fallback(f.as_ref(), matches, e))
+        .map_err(|e| classify_decode_failure(f.as_ref(), matches, &e))
+}
+
+/// Retry the decode with the decoders `zune_image` does not own.
+///
+/// Split out of [`decode`] so the fallback chain stays readable and so the
+/// conversion to [`rimage::error::RimageError`] happens in exactly one place.
+fn decode_with_fallback(
+    path: &Path, matches: &ArgMatches, e: ImageErrors,
+) -> Result<Image, ImageErrors> {
+    {
         if matches!(e, ImageErrors::ImageDecoderNotImplemented(_)) {
             #[cfg(any(feature = "avif", feature = "webp", feature = "svg"))]
-            let mut file = File::open(f.as_ref())?;
+            let mut file = File::open(path)?;
 
             #[cfg(feature = "svg")]
             {
-                if f.as_ref()
+                if path
                     .extension()
                     .is_some_and(|f| f.eq_ignore_ascii_case("svg") | f.eq_ignore_ascii_case("svgz"))
                 {
-                    let resources_dir = f.as_ref().parent().map(Path::to_path_buf);
+                    let resources_dir = path.parent().map(Path::to_path_buf);
 
                     #[cfg(feature = "resize")]
                     let decoder = SvgDecoder::try_new_with_resize(file, resources_dir, |size| {
@@ -57,6 +207,7 @@ pub fn decode<P: AsRef<Path>>(f: P, matches: &ArgMatches) -> Result<Image, Image
                         SvgOptions {
                             resources_dir,
                             target_size: None,
+                            pixel_budget: None,
                         },
                     )?;
 
@@ -85,13 +236,13 @@ pub fn decode<P: AsRef<Path>>(f: P, matches: &ArgMatches) -> Result<Image, Image
 
             #[cfg(feature = "webp")]
             {
-                if f.as_ref()
+                if path
                     .extension()
                     .is_some_and(|f| f.eq_ignore_ascii_case("webp"))
                 {
                     use rimage::codecs::webp::WebPDecoder;
 
-                    let decoder = WebPDecoder::try_new(file)?;
+                    let decoder = WebPDecoder::try_new_with_options(file, decode_options())?;
 
                     return Image::from_decoder(decoder);
                 }
@@ -101,7 +252,7 @@ pub fn decode<P: AsRef<Path>>(f: P, matches: &ArgMatches) -> Result<Image, Image
 
             #[cfg(feature = "tiff")]
             {
-                if f.as_ref()
+                if path
                     .extension()
                     .is_some_and(|f| f.eq_ignore_ascii_case("tiff") | f.eq_ignore_ascii_case("tif"))
                 {
@@ -115,13 +266,53 @@ pub fn decode<P: AsRef<Path>>(f: P, matches: &ArgMatches) -> Result<Image, Image
                 file.seek(SeekFrom::Start(0))?;
             }
 
-            Err(ImageErrors::ImageDecoderNotImplemented(
+            return Err(ImageErrors::ImageDecoderNotImplemented(
                 ImageFormat::Unknown,
-            ))
-        } else {
-            Err(e)
+            ));
         }
+
+        Err(e)
+    }
+}
+
+/// Turn a decode failure into the structured, side-tagged form the CLI reports.
+///
+/// The resize context is deliberately not reconstructed here. `classify_input`
+/// uses it only to name the requested dimensions in an
+/// `ImageOperationNotImplemented("resize")` failure, and the only resize
+/// failures reachable at decode time are the SVG render-target ones, whose
+/// message already names the offending size. Passing `None` keeps this
+/// function honest instead of inventing a reason it did not observe; the
+/// classification still reports it as an input failure on the right format.
+fn classify_decode_failure(
+    path: &Path, _matches: &ArgMatches, error: &ImageErrors,
+) -> rimage::error::RimageError {
+    use rimage::error::{InputError, RimageError, classify_input};
+
+    classify_input(path, error, None).unwrap_or_else(|| {
+        RimageError::Input(InputError::Decode {
+            path: path.to_path_buf(),
+            format: rimage::limits::ImageFormatId::from_extension(
+                path.extension()
+                    .and_then(|ext| ext.to_str())
+                    .unwrap_or_default(),
+            ),
+            cause: clone_for_report(error),
+        })
     })
+}
+
+/// Rebuild an [`ImageErrors`] so it can be stored in a reported error.
+///
+/// `ImageErrors` has no `Clone`, and the message only ever renders it, so the
+/// text is enough to reproduce it.
+fn clone_for_report(error: &ImageErrors) -> ImageErrors {
+    match error {
+        ImageErrors::ImageDecodeErrors(text) => ImageErrors::ImageDecodeErrors(text.clone()),
+        ImageErrors::GenericString(text) => ImageErrors::GenericString(text.clone()),
+        ImageErrors::IoError(io) => ImageErrors::IoError(std::io::Error::new(io.kind(), io.to_string())),
+        other => ImageErrors::GenericString(other.to_string()),
+    }
 }
 
 #[cfg(all(feature = "svg", feature = "resize"))]
@@ -434,6 +625,7 @@ impl AvailableEncoders {
             AvailableEncoders::JpegXl(enc) => enc.encode(img, sink),
             AvailableEncoders::MozJpeg(enc) => enc.encode(img, sink),
             AvailableEncoders::OxiPng(enc) => enc.encode(img, sink),
+            #[cfg(feature = "avif")]
             AvailableEncoders::Avif(enc) => enc.encode(img, sink),
             AvailableEncoders::Webp(enc) => enc.encode(img, sink),
             AvailableEncoders::Png(enc) => enc.encode(img, sink),
@@ -1043,5 +1235,58 @@ mod tests {
         fn oversized_dimensions_are_rejected() {
             assert!(target_size(&["--resize", "4294967396x4294967396"]).is_err());
         }
+    }
+}
+
+#[cfg(all(test, feature = "limits"))]
+mod limit_tests {
+    use super::*;
+
+    /// A JPEG header probe must recover the real dimensions from an ordinary
+    /// file, or the pre-check would silently never fire.
+    #[test]
+    fn a_jpeg_header_probe_reads_the_real_dimensions() {
+        let file = File::open("tests/files/jpg/f1t.jpg").unwrap();
+
+        let probed = probe_dimensions(file, rimage::limits::ImageFormatId::Jpeg);
+
+        let (width, height) = probed.expect("the fixture's header must be readable");
+        assert!(width > 0 && height > 0, "got {width}x{height}");
+    }
+
+    /// A format with no published side limit is not probed here; its ceiling is
+    /// the memory budget, which the decoder applies to the buffer it allocates.
+    #[test]
+    fn formats_without_a_side_limit_are_not_probed() {
+        let file = File::open("tests/files/png/f1t.png").unwrap();
+
+        assert!(
+            probe_dimensions(file, rimage::limits::ImageFormatId::Png).is_none(),
+            "PNG has no published side limit, so there is nothing to pre-check"
+        );
+    }
+
+    /// A file too short to contain a frame header must be reported as
+    /// unprobeable rather than as an error, so decoding still gets its chance.
+    #[test]
+    fn a_truncated_header_is_not_an_error() {
+        let truncated = std::io::Cursor::new(vec![0xFF, 0xD8, 0xFF]);
+
+        assert!(probe_dimensions(truncated, rimage::limits::ImageFormatId::Jpeg).is_none());
+    }
+
+    /// An ordinary image on this machine must pass the pre-check, so the limit
+    /// does not reject files the program is expected to handle.
+    #[test]
+    fn an_ordinary_image_passes_the_pre_check() {
+        check_input_limits(Path::new("tests/files/jpg/f1t.jpg"))
+            .expect("an ordinary fixture must not be rejected");
+    }
+
+    /// A path that does not exist is left for the decoder to report, rather
+    /// than being turned into a size error here.
+    #[test]
+    fn a_missing_file_is_not_a_size_error() {
+        assert!(check_input_limits(Path::new("tests/files/does-not-exist.jpg")).is_ok());
     }
 }
