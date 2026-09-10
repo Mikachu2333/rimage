@@ -2,7 +2,7 @@
 name          = "rimage"
 version       = "0.13.0-11"
 edition       = "2024"
-rust-version  = "1.90.0"
+rust-version  = "1.95.0"
 description   = "Optimize images natively with best-in-class codecs"
 license       = "MIT OR Apache-2.0"
 readme        = "README.md"
@@ -103,6 +103,8 @@ tiff    = ["dep:tiff"]
 svg = ["dep:resvg", "dep:skrifa"]
 icc     = ["dep:lcms2"]
 console = ["dep:console"]
+# Enables runtime system-resource probing, used to derive image size limits
+limits = ["dep:sysinfo", "dep:thiserror"]
 
 [dependencies]
 log = "0.4"
@@ -136,6 +138,10 @@ resvg = { version = "0.48.1", default-features = false, features = [
 skrifa = { version = "0.46.2", default-features = false, features = [
     "std",
 ], optional = true }
+
+# System resource probing for dynamic image size limits
+sysinfo   = { version = "0.39.6", optional = true }
+thiserror = { version = "2", optional = true }
 
 # cli
 anyhow = { version = "1.0", optional = true }
