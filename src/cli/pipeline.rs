@@ -35,16 +35,21 @@ use zune_imageprocs::premul_alpha::PremultiplyAlpha;
 
 /// Decoder options shared by every path in [`decode`].
 ///
-/// The defaults are wrong for this program in one specific way: zune decodes
-/// *every* frame of an animated PNG or JXL. We only ever re-encode a single
-/// still image, and an animation holds one full-size buffer per frame, so
-/// decoding the frames we are about to discard is pure memory waste. Asking for
-/// the first frame only keeps peak memory proportional to one image.
+/// The defaults differ from what this program wants in two ways.
 ///
-/// The maximum dimensions are deliberately left at the library default rather
-/// than pinned to a constant here: the size limit is derived at runtime by
-/// `rimage::limits`, and hard-coding a second, different ceiling in this file
-/// would give the two a way to disagree.
+/// First, zune decodes *every* frame of an animated PNG or JXL. We only ever
+/// re-encode a single still image, and an animation holds one full-size buffer
+/// per frame, so decoding the frames we are about to discard is pure memory
+/// waste. Asking for the first frame only keeps peak memory proportional to one
+/// image.
+///
+/// Second, the default `max_width`/`max_height` of 16384 is the ceiling the
+/// size pre-check reports, and it is deliberately *not* raised here. The
+/// underlying codecs advertise more (libjpeg allows 65500), but the decoder
+/// refuses a larger image from its header before the codec runs, so pinning a
+/// bigger number in [`rimage::limits::format_caps`] would only make the
+/// pre-check pass files that fail to decode. The two numbers are the same
+/// constant on purpose: raising one without the other reopens that gap.
 fn decode_options() -> DecoderOptions {
     DecoderOptions::default()
         .png_set_decode_animated(false)
@@ -105,14 +110,15 @@ fn check_input_limits(
 
 /// Read just the dimensions from an image header.
 ///
-/// Only the formats with a *published per-side limit* are handled here. They
-/// are the ones a cheap header read can settle, and rejecting them up front is
-/// what turns an oversized input into a message naming the ceiling instead of
-/// an allocation abort inside the codec.
+/// Every format rimage can decode is probed here where a header read can settle
+/// the size. Rejecting an oversized input up front is what turns it into a
+/// message naming the ceiling instead of an allocation abort inside the codec.
 ///
-/// Formats with no published side limit are bounded by the memory budget,
-/// which the decoder applies to the buffer it actually allocates; probing their
-/// headers here would duplicate that check without adding a format limit.
+/// The two probes that cannot simply read a fixed struct are the two container
+/// formats: AVIF keeps its dimensions in an ISO-BMFF property box, and TIFF in
+/// an IFD whose location depends on the header. Both are walked rather than
+/// scanned for a byte pattern, because a pattern would also match inside
+/// compressed image data and report the wrong size.
 #[cfg(feature = "limits")]
 fn probe_dimensions<R: std::io::Read>(
     mut reader: R, format: rimage::limits::ImageFormatId,
@@ -121,14 +127,8 @@ fn probe_dimensions<R: std::io::Read>(
 
     match format {
         ImageFormatId::Jpeg => {
-            use zune_core::bytestream::ZCursor;
-
             let prefix = read_prefix(&mut reader, JPEG_HEADER_PROBE_BYTES)?;
-
-            let mut decoder = zune_image::codecs::jpeg::JpegDecoder::new(ZCursor::new(prefix));
-            decoder.decode_headers().ok()?;
-            let (width, height) = decoder.dimensions()?;
-            Some((width as u64, height as u64))
+            jpeg_dimensions(&prefix)
         }
         ImageFormatId::WebP => {
             // libwebp exposes a bitstream-features probe that parses the RIFF
@@ -146,9 +146,323 @@ fn probe_dimensions<R: std::io::Read>(
                 None
             }
         }
+        ImageFormatId::Png => {
+            // The IHDR chunk holds both dimensions as big-endian `u32` and is
+            // required to be the first chunk (PNG spec § 11.2.2), so a fixed
+            // 16-byte prefix settles the size.
+            let prefix = read_prefix(&mut reader, PNG_HEADER_PROBE_BYTES)?;
+            png_dimensions(&prefix)
+        }
+        ImageFormatId::Avif => {
+            let prefix = read_prefix(&mut reader, CONTAINER_HEADER_PROBE_BYTES)?;
+            avif_dimensions(&prefix)
+        }
+        ImageFormatId::Tiff => {
+            let prefix = read_prefix(&mut reader, CONTAINER_HEADER_PROBE_BYTES)?;
+            tiff_dimensions(&prefix)
+        }
         _ => None,
     }
 }
+
+/// Read the width and height from a JPEG Start-Of-Frame segment.
+///
+/// The dimensions are parsed straight from the marker rather than through
+/// `zune_jpeg::JpegDecoder::decode_headers`, because that call applies the
+/// decoder's own `max_width`/`max_height` and fails on exactly the images this
+/// check exists to report. Reading the marker keeps the probe independent of
+/// whatever ceiling the decoder happens to enforce.
+///
+/// The walk follows JPEG marker segments (ITU-T T.81 § B.2): each is a
+/// two-byte marker then a two-byte big-endian length covering the length field
+/// itself. Segments that carry no length (`RSTn`, `TEM`, and the standalone
+/// `SOI`/`EOI` markers) would desynchronise the walk, so encountering one is
+/// treated as "cannot read this file" rather than guessed at.
+#[cfg(feature = "limits")]
+fn jpeg_dimensions(data: &[u8]) -> Option<(u64, u64)> {
+    /// Markers that introduce entropy-coded data; the frame header always
+    /// precedes the first of them, so reaching one means it was not found.
+    const START_OF_SCAN: u8 = 0xDA;
+    /// Markers carrying no length field.
+    const STANDALONE_MARKERS: [u8; 6] = [0x01, 0xD0, 0xD1, 0xD2, 0xD8, 0xD9];
+
+    // A JPEG file begins with SOI.
+    if data.get(0..2)? != [0xFF, 0xD8] {
+        return None;
+    }
+
+    let mut at = 2;
+    while at + 4 <= data.len() {
+        // Markers are introduced by 0xFF; fill bytes of additional 0xFF are
+        // permitted before the marker code.
+        if data[at] != 0xFF {
+            return None;
+        }
+
+        let mut marker = data[at + 1];
+        while marker == 0xFF {
+            at += 1;
+            marker = *data.get(at + 1)?;
+        }
+
+        if STANDALONE_MARKERS.contains(&marker) {
+            return None;
+        }
+        if marker == START_OF_SCAN {
+            return None;
+        }
+
+        let length = u16::from_be_bytes(data.get(at + 2..at + 4)?.try_into().ok()?) as usize;
+        // The length covers itself, so it is never smaller than two.
+        if length < 2 {
+            return None;
+        }
+
+        // SOF0..SOF15 carry the frame header, except the four that are not
+        // frame headers at all: DHT (0xC4), JPG (0xC8), and DAC (0xCC).
+        if (0xC0..=0xCF).contains(&marker) && marker != 0xC4 && marker != 0xC8 && marker != 0xCC {
+            // Payload: precision(1), height(2), width(2).
+            let payload = at + 4;
+            let height = u16::from_be_bytes(data.get(payload + 1..payload + 3)?.try_into().ok()?);
+            let width = u16::from_be_bytes(data.get(payload + 3..payload + 5)?.try_into().ok()?);
+
+            if width == 0 || height == 0 {
+                return None;
+            }
+
+            return Some((u64::from(width), u64::from(height)));
+        }
+
+        at += 2 + length;
+    }
+
+    None
+}
+
+/// Bytes of a file read to recover a PNG `IHDR` chunk.
+///
+/// The signature is 8 bytes, then a 4-byte length, a 4-byte type, and the
+/// 13-byte `IHDR` payload whose first eight bytes are the dimensions.
+#[cfg(feature = "limits")]
+const PNG_HEADER_PROBE_BYTES: usize = 32;
+
+/// Read the width and height from a PNG `IHDR` chunk.
+///
+/// PNG dimensions are 32-bit and the chunk is required to come first, but the
+/// decoder applies its own ceiling of 16384 from `DecoderOptions`, so an image
+/// can be well within the format's capability and still be rejected. Probing
+/// here is what turns that refusal into a message naming the ceiling.
+#[cfg(feature = "limits")]
+fn png_dimensions(data: &[u8]) -> Option<(u64, u64)> {
+    /// The eight-byte signature every PNG starts with (PNG spec § 5.2).
+    const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+
+    // Signature, then the chunk length and type, then the payload begins.
+    const IHDR_PAYLOAD: usize = 16;
+
+    if data.get(0..8)? != SIGNATURE {
+        return None;
+    }
+
+    // A conforming file's first chunk is `IHDR`; if it is not, this is not a
+    // file whose dimensions can be trusted from a prefix.
+    if data.get(12..16)? != b"IHDR" {
+        return None;
+    }
+
+    let width = u32::from_be_bytes(data.get(IHDR_PAYLOAD..IHDR_PAYLOAD + 4)?.try_into().ok()?);
+    let height = u32::from_be_bytes(data.get(IHDR_PAYLOAD + 4..IHDR_PAYLOAD + 8)?.try_into().ok()?);
+
+    if width == 0 || height == 0 {
+        return None;
+    }
+
+    Some((u64::from(width), u64::from(height)))
+}
+
+/// Bytes of a file read to recover a container header.
+///
+/// AVIF puts its `ispe` property box before the image data, and a TIFF IFD sits
+/// at an offset given in the first eight bytes, so both are reachable from the
+/// front of the file. The bound keeps refusing an oversized input cheap: the
+/// prefix is read, never the payload.
+#[cfg(feature = "limits")]
+const CONTAINER_HEADER_PROBE_BYTES: usize = 64 * 1024;
+
+/// Read the width and height from an AVIF `ispe` property box.
+///
+/// AVIF is ISO-BMFF (ISO 14496-12), so the dimensions live in the
+/// `ImageSpatialExtent` property of the `meta` box rather than in a fixed
+/// header. The boxes are walked by their declared sizes so a byte sequence that
+/// merely looks like `ispe` inside compressed data is never mistaken for the
+/// property.
+///
+/// Returns `None` for a malformed or truncated file: the decoder reports that
+/// better than a pre-check could.
+#[cfg(feature = "limits")]
+fn avif_dimensions(data: &[u8]) -> Option<(u64, u64)> {
+    /// A box header is a 4-byte big-endian size followed by a 4-byte type.
+    const BOX_HEADER: usize = 8;
+
+    fn read_u32(data: &[u8], at: usize) -> Option<u32> {
+        let bytes = data.get(at..at + 4)?;
+        Some(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    /// Walk the boxes in `data[range]` looking for one with type `wanted`,
+    /// returning the range of its *payload*.
+    fn find_box(data: &[u8], mut start: usize, end: usize, wanted: &[u8; 4]) -> Option<(usize, usize)> {
+        while start + BOX_HEADER <= end {
+            let size = read_u32(data, start)?;
+
+            // A size of 1 means a 64-bit size follows the type; a size of 0
+            // means the box runs to the end of the enclosing range. Neither is
+            // produced for the boxes this function looks for, so rather than
+            // half-support them, refuse and let the decoder handle the file.
+            if size == 0 || size == 1 {
+                return None;
+            }
+
+            let size = size as usize;
+            let payload = start + BOX_HEADER;
+            let box_end = start.checked_add(size)?;
+            if box_end > end {
+                return None;
+            }
+
+            if data.get(start + 4..start + 8)? == wanted {
+                return Some((payload, box_end));
+            }
+
+            start = box_end;
+        }
+
+        None
+    }
+
+    // `ftyp` is not consulted: the caller already chose this probe from the
+    // file extension, and re-checking the brand here would only duplicate it.
+    // `meta` is a plain box, so hunt it at the top level.
+    let (meta_start, meta_end) = find_box(data, 0, data.len(), b"meta")?;
+
+    // `meta` is a FullBox: 4 bytes of version and flags precede its children.
+    let (iprp_start, iprp_end) = find_box(data, meta_start + 4, meta_end, b"iprp")?;
+    let (ipco_start, ipco_end) = find_box(data, iprp_start, iprp_end, b"ipco")?;
+
+    // `ispe` is a FullBox whose payload is version/flags then width and height,
+    // each a 32-bit big-endian integer (ISO 14496-12 § 12.1.4).
+    let (ispe_start, _) = find_box(data, ipco_start, ipco_end, b"ispe")?;
+    let width = read_u32(data, ispe_start + 4)?;
+    let height = read_u32(data, ispe_start + 8)?;
+
+    // A zero extent is not a size to reject on; it means the probe misread the
+    // container, and a wrong rejection is worse than no pre-check.
+    if width == 0 || height == 0 {
+        return None;
+    }
+
+    Some((u64::from(width), u64::from(height)))
+}
+
+/// Read the width and height from a TIFF image file directory.
+///
+/// Both byte orders are handled, as are both value types the specification
+/// allows for these tags: a `SHORT` when the dimension fits in 16 bits and a
+/// `LONG` otherwise. Anything else is left to the decoder.
+#[cfg(feature = "limits")]
+fn tiff_dimensions(data: &[u8]) -> Option<(u64, u64)> {
+    /// Tag numbers from TIFF 6.0 § 8: `ImageWidth` and `ImageLength`.
+    const TAG_IMAGE_WIDTH: u16 = 0x0100;
+    const TAG_IMAGE_LENGTH: u16 = 0x0101;
+
+    /// TIFF type codes; only these two are valid for the tags above.
+    const TYPE_SHORT: u16 = 3;
+    const TYPE_LONG: u16 = 4;
+
+    const IFD_ENTRY_SIZE: usize = 12;
+
+    // The first two bytes give the byte order, the next two must be 42, and the
+    // following four hold the offset of the first IFD (TIFF 6.0 § 2).
+    let little_endian = match data.get(0..2)? {
+        b"II" => true,
+        b"MM" => false,
+        _ => return None,
+    };
+
+    let u16_at = |at: usize| -> Option<u16> {
+        let bytes: [u8; 2] = data.get(at..at + 2)?.try_into().ok()?;
+        Some(if little_endian {
+            u16::from_le_bytes(bytes)
+        } else {
+            u16::from_be_bytes(bytes)
+        })
+    };
+    let u32_at = |at: usize| -> Option<u32> {
+        let bytes: [u8; 4] = data.get(at..at + 4)?.try_into().ok()?;
+        Some(if little_endian {
+            u32::from_le_bytes(bytes)
+        } else {
+            u32::from_be_bytes(bytes)
+        })
+    };
+
+    if u16_at(2)? != 42 {
+        return None;
+    }
+
+    let ifd = u32_at(4)? as usize;
+    let entry_count = u16_at(ifd)? as usize;
+
+    let mut width = None;
+    let mut height = None;
+
+    for index in 0..entry_count {
+        let entry = ifd + 2 + index * IFD_ENTRY_SIZE;
+        let tag = u16_at(entry)?;
+        if tag != TAG_IMAGE_WIDTH && tag != TAG_IMAGE_LENGTH {
+            continue;
+        }
+
+        let field_type = u16_at(entry + 2)?;
+        // The count is required to be 1 for these tags; a value other than that
+        // means this is not the dimension field it appears to be. It is a
+        // 32-bit field, so reading it as 16 bits would see only the high half
+        // on a big-endian file and reject every one of them.
+        if u32_at(entry + 4)? != 1 {
+            return None;
+        }
+
+        // TIFF 6.0 § 2 stores a value narrower than four bytes left-justified
+        // in the value field, so a `SHORT` occupies the first two bytes under
+        // either byte order. Those two bytes are then decoded in the file's
+        // order; treating the field as a truncated `LONG` would give the right
+        // answer little-endian and zero big-endian.
+        let value = match (field_type, little_endian) {
+            (TYPE_SHORT, true) => u32::from(u16::from_le_bytes(
+                data.get(entry + 8..entry + 10)?.try_into().ok()?,
+            )),
+            (TYPE_SHORT, false) => u32::from(u16::from_be_bytes(
+                data.get(entry + 8..entry + 10)?.try_into().ok()?,
+            )),
+            (TYPE_LONG, _) => u32_at(entry + 8)?,
+            _ => return None,
+        };
+
+        if tag == TAG_IMAGE_WIDTH {
+            width = Some(value);
+        } else {
+            height = Some(value);
+        }
+    }
+
+    match (width, height) {
+        (Some(width), Some(height)) if width > 0 && height > 0 => {
+            Some((u64::from(width), u64::from(height)))
+        }
+        _ => None,
+    }
+}
+
 
 /// Read up to `limit` bytes from the front of `reader`.
 ///
@@ -1348,16 +1662,54 @@ mod limit_tests {
         assert!(width > 0 && height > 0, "got {width}x{height}");
     }
 
-    /// A format with no published side limit is not probed here; its ceiling is
-    /// the memory budget, which the decoder applies to the buffer it allocates.
+    /// A format with no published limit and no decoder ceiling is not probed;
+    /// its only bound is the memory budget, which the decoder applies to the
+    /// buffer it allocates.
     #[test]
     fn formats_without_a_side_limit_are_not_probed() {
-        let file = File::open("tests/files/png/f1t.png").unwrap();
+        let file = File::open("tests/files/jpg/f1t.jpg").unwrap();
 
         assert!(
-            probe_dimensions(file, rimage::limits::ImageFormatId::Png).is_none(),
-            "PNG has no published side limit, so there is nothing to pre-check"
+            probe_dimensions(file, rimage::limits::ImageFormatId::Tiff).is_none(),
+            "format identity alone must not imply a probe; TIFF is probed by \
+             its own reader but a JPEG body is not a TIFF"
         );
+    }
+
+    /// PNG dimensions are in the `IHDR` chunk, which the spec requires to come
+    /// first, so a short prefix settles them.
+    #[test]
+    fn a_png_header_probe_reads_the_real_dimensions() {
+        let file = File::open("tests/files/png/f1trgba.png").unwrap();
+
+        let (width, height) = probe_dimensions(file, rimage::limits::ImageFormatId::Png)
+            .expect("the fixture's IHDR must be readable");
+
+        assert!(width > 0 && height > 0, "got {width}x{height}");
+    }
+
+    /// A PNG whose first chunk is not `IHDR` is malformed, and its dimensions
+    /// must not be read from wherever a 16-byte window happens to land.
+    #[test]
+    fn a_png_without_a_leading_ihdr_is_not_probed() {
+        let mut data = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        data.extend_from_slice(&13u32.to_be_bytes());
+        data.extend_from_slice(b"IDAT");
+        data.extend_from_slice(&[0; 16]);
+
+        assert!(png_dimensions(&data).is_none());
+    }
+
+    /// A file that does not start with the PNG signature is not a PNG, whatever
+    /// else it holds.
+    #[test]
+    fn a_file_that_is_not_a_png_is_not_probed() {
+        let mut data = vec![0u8; 8];
+        data.extend_from_slice(&13u32.to_be_bytes());
+        data.extend_from_slice(b"IHDR");
+        data.extend_from_slice(&[0; 16]);
+
+        assert!(png_dimensions(&data).is_none());
     }
 
     /// WebP has a published 16383-per-side limit, so its header must be
@@ -1381,6 +1733,149 @@ mod limit_tests {
         let truncated = std::io::Cursor::new(vec![0xFF, 0xD8, 0xFF]);
 
         assert!(probe_dimensions(truncated, rimage::limits::ImageFormatId::Jpeg).is_none());
+    }
+
+    /// AVIF keeps its size in an ISO-BMFF property box rather than a header, so
+    /// the box walk is the only thing standing between an oversized file and
+    /// the decoder. A wrong answer here is worse than none, so the dimensions
+    /// are compared against the values `ispe` actually declares.
+    #[test]
+    fn an_avif_probe_reads_the_dimensions_from_the_ispe_box() {
+        let file = File::open("tests/files/avif/f1t.avif").unwrap();
+
+        let (width, height) = probe_dimensions(file, rimage::limits::ImageFormatId::Avif)
+            .expect("the fixture's ispe box must be reachable");
+
+        // The fixture is a real 48x80 image; these are the values its `ispe`
+        // box carries.
+        assert_eq!((width, height), (48, 80));
+    }
+
+    /// A byte sequence that merely looks like `ispe` must not be mistaken for
+    /// the property box. The walk keys off declared box sizes, so a file with
+    /// no `meta`/`iprp`/`ipco` chain yields nothing rather than a bogus size.
+    #[test]
+    fn an_avif_file_without_the_property_chain_is_not_probed() {
+        // A well-formed `ftyp` followed by bytes that spell `ispe` where no
+        // property box can legally appear.
+        let mut data = Vec::new();
+        data.extend_from_slice(&20u32.to_be_bytes());
+        data.extend_from_slice(b"ftyp");
+        data.extend_from_slice(b"avif");
+        data.extend_from_slice(&[0; 8]);
+        data.extend_from_slice(&20u32.to_be_bytes());
+        data.extend_from_slice(b"ispe");
+        data.extend_from_slice(&[0; 12]);
+
+        assert!(avif_dimensions(&data).is_none());
+    }
+
+    /// TIFF stores its dimensions in an IFD reached through an offset in the
+    /// header, so the tag walk has to follow that offset rather than scan.
+    #[test]
+    fn a_tiff_probe_reads_the_dimensions_from_the_ifd() {
+        let file = File::open("tests/files/tiff/f1t.tif").unwrap();
+
+        let (width, height) = probe_dimensions(file, rimage::limits::ImageFormatId::Tiff)
+            .expect("the fixture's IFD must be readable");
+
+        assert!(width > 0 && height > 0, "got {width}x{height}");
+    }
+
+    /// Build a minimal TIFF containing only the two dimension tags.
+    ///
+    /// `value_type` is the TIFF type code, so the same builder covers both the
+    /// `SHORT` and `LONG` encodings the specification allows here.
+    fn tiff_with_dimensions(
+        order: &[u8; 2], value_type: u16, width: u32, height: u32,
+    ) -> Vec<u8> {
+        let big = order == b"MM";
+        let mut file = Vec::new();
+        file.extend_from_slice(order);
+
+        let push_u16 = |file: &mut Vec<u8>, value: u16| {
+            let bytes = if big {
+                value.to_be_bytes()
+            } else {
+                value.to_le_bytes()
+            };
+            file.extend_from_slice(&bytes);
+        };
+        let push_u32 = |file: &mut Vec<u8>, value: u32| {
+            let bytes = if big {
+                value.to_be_bytes()
+            } else {
+                value.to_le_bytes()
+            };
+            file.extend_from_slice(&bytes);
+        };
+
+        push_u16(&mut file, 42);
+        push_u32(&mut file, 8);
+
+        // Two IFD entries, in tag order.
+        push_u16(&mut file, 2);
+        for (tag, value) in [(0x0100u16, width), (0x0101, height)] {
+            push_u16(&mut file, tag);
+            push_u16(&mut file, value_type);
+            push_u32(&mut file, 1);
+            // A `SHORT` is stored left-justified and padded; a `LONG` fills the
+            // whole value field.
+            if value_type == 3 {
+                push_u16(&mut file, value as u16);
+                push_u16(&mut file, 0);
+            } else {
+                push_u32(&mut file, value);
+            }
+        }
+
+        file
+    }
+
+    /// Both TIFF byte orders are in the wild, and both must be accepted. The
+    /// same tag values are written little-endian and big-endian here.
+    #[test]
+    fn a_tiff_probe_handles_both_byte_orders() {
+        assert_eq!(
+            tiff_dimensions(&tiff_with_dimensions(b"II", 4, 132_778, 5_000)),
+            Some((132_778, 5_000)),
+            "little-endian TIFF must be readable"
+        );
+        assert_eq!(
+            tiff_dimensions(&tiff_with_dimensions(b"MM", 4, 132_778, 5_000)),
+            Some((132_778, 5_000)),
+            "big-endian TIFF must be readable"
+        );
+    }
+
+    /// `SHORT` is the common encoding for small dimensions and is stored
+    /// left-justified in the four-byte value field, which is the one place a
+    /// big-endian file differs from a little-endian one.
+    #[test]
+    fn a_tiff_probe_reads_short_values() {
+        assert_eq!(
+            tiff_dimensions(&tiff_with_dimensions(b"II", 3, 640, 480)),
+            Some((640, 480)),
+            "little-endian SHORT must be readable"
+        );
+        assert_eq!(
+            tiff_dimensions(&tiff_with_dimensions(b"MM", 3, 640, 480)),
+            Some((640, 480)),
+            "big-endian SHORT must be readable"
+        );
+    }
+
+    /// A file whose magic number is wrong is not a TIFF, whatever else it
+    /// contains, and must not be reported as one.
+    #[test]
+    fn a_file_that_is_not_a_tiff_is_not_probed() {
+        let mut file = Vec::new();
+        file.extend_from_slice(b"XX");
+        file.extend_from_slice(&42u16.to_le_bytes());
+        file.extend_from_slice(&8u32.to_le_bytes());
+        file.extend_from_slice(&[0; 32]);
+
+        assert!(tiff_dimensions(&file).is_none());
     }
 
     /// An ordinary image on this machine must pass the pre-check, so the limit
