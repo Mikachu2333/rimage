@@ -285,8 +285,17 @@ impl DecoderTrait for SvgDecoder {
         resvg::render(&self.tree, transform, &mut pixmap.as_mut());
 
         // tiny-skia stores premultiplied alpha while zune_image expects
-        // straight alpha.
-        let mut pixels = Vec::with_capacity(width * height * 4);
+        // straight alpha. Use checked_mul to avoid usize overflow on
+        // 32-bit targets or extremely large render targets.
+        let pixel_count = width
+            .checked_mul(height)
+            .and_then(|px| px.checked_mul(4))
+            .ok_or_else(|| {
+                ImageErrors::ImageDecodeErrors(format!(
+                    "SVG render target {width}x{height} overflows the output buffer size"
+                ))
+            })?;
+        let mut pixels = Vec::with_capacity(pixel_count);
         for pixel in pixmap.pixels() {
             let color = pixel.demultiply();
             pixels.extend_from_slice(&[color.red(), color.green(), color.blue(), color.alpha()]);
