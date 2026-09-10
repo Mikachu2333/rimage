@@ -1964,7 +1964,6 @@ dependencies = [
  "serde_json",
  "skrifa 0.46.2",
  "sysinfo",
- "thiserror",
  "tiff",
  "webp",
  "winresource",

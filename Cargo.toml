@@ -104,7 +104,7 @@ svg = ["dep:resvg", "dep:skrifa"]
 icc     = ["dep:lcms2"]
 console = ["dep:console"]
 # Enables runtime system-resource probing, used to derive image size limits
-limits = ["dep:sysinfo", "dep:thiserror"]
+limits = ["dep:sysinfo"]
 
 [dependencies]
 log = "0.4"
@@ -140,8 +140,7 @@ skrifa = { version = "0.46.2", default-features = false, features = [
 ], optional = true }
 
 # System resource probing for dynamic image size limits
-sysinfo   = { version = "0.39.6", optional = true }
-thiserror = { version = "2", optional = true }
+sysinfo = { version = "0.39.6", optional = true }
 
 # cli
 anyhow = { version = "1.0", optional = true }
