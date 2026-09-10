@@ -382,6 +382,12 @@ pub fn free_space_at(path: &Path) -> Option<u64> {
         .map(|disk| disk.available_space())
 }
 
+/// Free bytes on the volume holding `path`, if it can be determined.
+///
+/// Without the `limits` feature there is nothing to measure, because the
+/// platform query lives behind it. This always reports "unknown", which is
+/// the same answer the enabled version gives for a volume it cannot
+/// enumerate — callers must not read it as "no space left".
 #[cfg(not(feature = "limits"))]
 pub fn free_space_at(_path: &Path) -> Option<u64> {
     None
