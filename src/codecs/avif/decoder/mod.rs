@@ -167,13 +167,13 @@ fn picture_to_rgba(
     let mut rgba = vec![0u8; rgba_len];
 
     if color.matrix_coefficients() == MatrixCoefficients::Identity {
-        identity_planes_to_rgba(color, &mut rgba);
+        identity_planes_to_rgba(color, &mut rgba)?;
     } else {
         color_planes_to_rgba(color, &mut rgba)?;
     }
 
     if let Some(alpha) = alpha {
-        merge_alpha_plane(&mut rgba, alpha, width, height);
+        merge_alpha_plane(&mut rgba, alpha, width, height)?;
     }
 
     if premultiplied {
@@ -302,7 +302,7 @@ fn color_planes_to_rgba(color: &Picture, rgba: &mut [u8]) -> Result<(), ImageErr
         };
         high_depth_ycbcr_to_rgba(
             &view,
-            color.bits_per_component().map(|bits| bits.0).unwrap_or(8),
+            color.bits_per_component().map(|bits| bits.0.clamp(8, 16)).unwrap_or(8),
             color.color_range() == Dav1dYuvRange::Full,
             &transform,
             rgba,
@@ -341,6 +341,8 @@ fn monochrome_to_rgba(
         let plane = &color.plane(PlanarImageComponent::Y);
         let stride = color.stride(PlanarImageComponent::Y) as usize;
 
+        check_plane(plane, stride, height, width * 2)?;
+
         for row in 0..height {
             let source = &plane[row * stride..][..width * 2];
             let out = &mut rgba[row * width * 4..][..width * 4];
@@ -359,7 +361,7 @@ fn monochrome_to_rgba(
 }
 
 /// AV1 identity matrix carries RGB directly in the planes: Y=G, U=B, V=R.
-fn identity_planes_to_rgba(color: &Picture, rgba: &mut [u8]) {
+fn identity_planes_to_rgba(color: &Picture, rgba: &mut [u8]) -> Result<(), ImageErrors> {
     let (width, height) = (color.width() as usize, color.height() as usize);
     let g_plane = &color.plane(PlanarImageComponent::Y);
     let g_stride = color.stride(PlanarImageComponent::Y) as usize;
@@ -367,6 +369,15 @@ fn identity_planes_to_rgba(color: &Picture, rgba: &mut [u8]) {
     let b_stride = color.stride(PlanarImageComponent::U) as usize;
     let r_plane = &color.plane(PlanarImageComponent::V);
     let r_stride = color.stride(PlanarImageComponent::V) as usize;
+
+    let bytes_per_sample = if color.bit_depth() == 8 { 1 } else { 2 };
+    for (plane, stride) in [
+        (&r_plane[..], r_stride),
+        (&g_plane[..], g_stride),
+        (&b_plane[..], b_stride),
+    ] {
+        check_plane(plane, stride, height, width * bytes_per_sample)?;
+    }
 
     if color.bit_depth() == 8 {
         for y in 0..height {
@@ -390,12 +401,19 @@ fn identity_planes_to_rgba(color: &Picture, rgba: &mut [u8]) {
             }
         }
     }
+
+    Ok(())
 }
 
 /// Copies the alpha stream's luma plane into the RGBA alpha channel.
-fn merge_alpha_plane(rgba: &mut [u8], alpha: &Picture, width: usize, height: usize) {
+fn merge_alpha_plane(
+    rgba: &mut [u8], alpha: &Picture, width: usize, height: usize,
+) -> Result<(), ImageErrors> {
     let plane = &alpha.plane(PlanarImageComponent::Y);
     let stride = alpha.stride(PlanarImageComponent::Y) as usize;
+
+    let bytes_per_sample = if alpha.bit_depth() == 8 { 1 } else { 2 };
+    check_plane(plane, stride, height, width * bytes_per_sample)?;
 
     if alpha.bit_depth() == 8 {
         for y in 0..height {
@@ -414,6 +432,30 @@ fn merge_alpha_plane(rgba: &mut [u8], alpha: &Picture, width: usize, height: usi
                 row[x * 4 + 3] = sample_u8(bytes, used);
             }
         }
+    }
+
+    Ok(())
+}
+
+/// Verify a plane holds `height` rows of `row_bytes` at `stride`, so the
+/// conversion loops can index it without per-pixel bounds checks.
+///
+/// dav1d promises a stride of at least the row width, but a short plane is
+/// not worth a panic in a worker thread, where the release profile's
+/// `panic = "abort"` would take down the whole process.
+fn check_plane(
+    plane: &[u8], stride: usize, height: usize, row_bytes: usize,
+) -> Result<(), ImageErrors> {
+    let needed = height
+        .checked_sub(1)
+        .map_or(Some(0), |last_row| last_row.checked_mul(stride))
+        .and_then(|offset| offset.checked_add(row_bytes));
+
+    match needed {
+        Some(needed) if plane.len() >= needed => Ok(()),
+        _ => Err(decode_error(
+            "decoded plane is smaller than its dimensions imply",
+        )),
     }
 }
 
@@ -571,10 +613,14 @@ fn rgba_stride(width: usize) -> u32 {
 }
 
 /// Number of bits actually used by the samples of a picture.
+///
+/// dav1d only ever reports 8, 10 or 12, but the value is clamped to 8..=16
+/// anyway: below 8 the `used - 8` shifts in `expand_luma`/`expand_chroma`
+/// underflow, and above 16 the `1 << used` shifts overflow.
 fn used_bits(picture: &Picture) -> Result<usize, ImageErrors> {
     picture
         .bits_per_component()
-        .map(|bits| bits.0)
+        .map(|bits| bits.0.clamp(8, 16))
         .ok_or_else(|| decode_error("unknown bit depth"))
 }
 
