@@ -515,6 +515,94 @@ fn colorspace_to_string(colorspace: &ColorSpace) -> String {
     }
 }
 
+/// Print the runtime-derived size limits and exit.
+///
+/// A hidden diagnostic that shows the probed system memory, the per-format
+/// dimension and pixel ceilings, and which source is the binding constraint.
+/// Used to understand why an image was rejected and to calibrate the pipeline
+/// cost estimates.
+#[cfg(feature = "limits")]
+fn print_limits(subcommand: &str, threads: usize) -> std::process::ExitCode {
+    use rimage::error::human_bytes;
+    use rimage::limits::{
+        ImageFormatId, LimitSet, PipelineCost, SystemBudget,
+        bytes_per_pixel,
+    };
+
+    let format = ImageFormatId::from_encoder_name(subcommand);
+    let budget = SystemBudget::probe(threads);
+    let cost = PipelineCost::for_encoder(format);
+    let depth = zune_core::bit_depth::BitDepth::Eight;
+    let colorspace = zune_core::colorspace::ColorSpace::RGBA;
+    let bpp = bytes_per_pixel(depth, colorspace);
+
+    println!("rimage runtime limits");
+    println!("─────────────────────");
+    println!();
+    println!("Encoder:    {subcommand} ({})", format.name());
+    println!("Concurrency: {threads} image(s) at once");
+    println!();
+    println!("System budget");
+    println!("  Available memory:    {}", human_bytes(budget.available_memory));
+    println!("  Address space cap:   {}", human_bytes(budget.address_cap));
+    println!("  Probe status:        {}", if budget.is_probed() { "ok" } else { "fallback (512 MiB)" });
+    println!("  Per-image bytes:     {}", human_bytes(budget.per_image_bytes()));
+    println!();
+
+    let caps = rimage::limits::format_caps(format);
+    println!("Format caps ({})", caps.source);
+    println!("  Max side:   {}", caps.max_side);
+    let max_pixels_str = if caps.max_pixels == u64::MAX {
+        "unbounded".to_string()
+    } else {
+        caps.max_pixels.to_string()
+    };
+    println!("  Max pixels: {max_pixels_str}");
+    println!();
+
+    println!("Pipeline cost");
+    println!("  Decode:   {}×", cost.decode);
+    println!("  Resize:   {}×", cost.resize);
+    println!("  Quantize: {}×", cost.quantize);
+    println!("  Encode:   {}×", cost.encode);
+    println!("  Total:    {}× (× {} B/px = {} B/px)",
+        cost.total(), bpp, cost.total() * bpp);
+    println!();
+
+    let limits = LimitSet::for_input(format, depth, colorspace, &budget, cost);
+    println!("Effective input limits");
+    println!("  Max width:   {}", limits.max_width);
+    println!("  Max height:  {}", limits.max_height);
+    println!("  Max pixels:  {} (≈ {}²)",
+        limits.max_pixels,
+        (limits.max_pixels as f64).sqrt() as u64);
+    println!("  Max bytes:   {}", human_bytes(limits.max_bytes));
+    println!("  Binding:     {}", binding_str(limits.binding));
+    println!("  Byte binding: {}", binding_str(limits.bytes_binding));
+    println!();
+    println!("  Suggested --resize side: {}", limits.suggested_side());
+
+    std::process::ExitCode::SUCCESS
+}
+
+#[cfg(not(feature = "limits"))]
+fn print_limits(_subcommand: &str, _threads: usize) -> std::process::ExitCode {
+    eprintln!("--print-limits requires the 'limits' feature to be enabled at build time.");
+    eprintln!("Rebuild with: cargo b -r --features limits");
+    std::process::ExitCode::from(rimage::exit::ExitCode::Usage.as_u8())
+}
+
+#[cfg(feature = "limits")]
+fn binding_str(binding: rimage::limits::Binding) -> &'static str {
+    use rimage::limits::Binding;
+    match binding {
+        Binding::Format => "format limit",
+        Binding::Memory => "memory budget",
+        Binding::Disk => "disk free space",
+        Binding::None => "none",
+    }
+}
+
 /// Normalize a user-provided file path into its canonical absolute form.
 ///
 /// Handles:
@@ -748,6 +836,14 @@ fn main() -> std::process::ExitCode {
     match matches.subcommand() {
         Some((subcommand, matches)) => {
             let threads = matches.get_one::<u8>("threads").copied().unwrap_or(1) as usize;
+
+            // Hidden diagnostic: print the runtime-derived limits and exit
+            // before touching any files. Used to understand why an image was
+            // rejected and to calibrate the pipeline cost estimates.
+            if matches.get_flag("print-limits") {
+                return print_limits(subcommand, threads);
+            }
+
             let thread_pool = match rayon::ThreadPoolBuilder::new().num_threads(threads).build() {
                 Ok(pool) => pool,
                 Err(error) => {

@@ -9,12 +9,13 @@ impl CommonArgs for Command {
     fn common_args(self) -> Self {
         let cmd = self
         .next_help_heading("General").args([
-            arg!(files: <FILES> ... "Input file(s) to process.")
+            arg!(files: [FILES] ... "Input file(s) to process.")
                 .long_help(indoc! {r#"Input file(s) to process.
 
                 If the file path contains spaces, enclose the path with double quotation marks on both sides.
 
                 A file named `file.list` is read as a UTF-8 file list with one input file per line. Blank lines are skipped, surrounding whitespace is ignored, and relative paths are resolved against the current working directory. When a `file.list` is provided, all other input file arguments are ignored."#})
+                .required_unless_present("print-limits")
                 .value_parser(value_parser!(PathBuf)),
             arg!(-d --directory <DIR> "The directory to write output file(s) to.")
                 .long_help(indoc! {r#"The directory to write output file(s) to.
@@ -58,6 +59,16 @@ impl CommonArgs for Command {
 
                 This will output the metadata of the processed image(s) in JSON format."#})
                 .value_parser(value_parser!(PathBuf)),
+            arg!(--"print-limits" "Print the runtime-derived size limits and exit.")
+                .long_help(indoc! {r#"Print the runtime-derived size limits and exit.
+
+                Shows the probed system memory budget, the per-format dimension and pixel
+                ceilings, and which source (format, memory, or disk) is the binding
+                constraint. No files are processed. This is a diagnostic tool for
+                understanding why an image was rejected or for calibrating the
+                pipeline cost estimates."#})
+                .action(ArgAction::SetTrue)
+                .hide(true),
         ]);
 
         cmd.preprocessors()
