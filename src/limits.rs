@@ -629,23 +629,12 @@ pub fn bytes_per_pixel(depth: BitDepth, colorspace: ColorSpace) -> u64 {
     (components * bytes_per_component).max(1)
 }
 
-/// Integer square root by Newton's method.
+/// Integer square root.
 ///
-/// `u64::isqrt` would do, but staying explicit keeps the MSRV story simple and
-/// the rounding behaviour obvious.
+/// Delegates to `u64::isqrt`, which has been stable since Rust 1.79 and
+/// the project's MSRV (1.95.0) is well above that.
 fn integer_sqrt(value: u64) -> u64 {
-    if value < 2 {
-        return value;
-    }
-
-    let mut guess = 1u64 << ((64 - value.leading_zeros()) / 2 + 1);
-    loop {
-        let next = (guess + value / guess) / 2;
-        if next >= guess {
-            return guess;
-        }
-        guess = next;
-    }
+    value.isqrt()
 }
 
 #[cfg(test)]
