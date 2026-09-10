@@ -17,30 +17,44 @@
 
 _sdk_root='/c/Program Files (x86)/Windows Kits/10'
 
+# --- Target architecture ---------------------------------------------------
+# x64 is the default because Git Bash itself is x64-only (on ARM64 Windows it
+# runs emulated, and the x64 toolchain is what it can execute). Override for
+# an ARM64-native environment (e.g. MSYS2 clangarm64): RIMAGE_ARCH=arm64.
+_arch="${RIMAGE_ARCH:-x64}"
+case "$_arch" in
+    x64)   _host_dir="Hostx64" ;;
+    arm64) _host_dir="Hostarm64" ;;
+    *)
+        echo "msvc-env: unsupported RIMAGE_ARCH '$_arch' (expected x64 or arm64)" >&2
+        return 1 2>/dev/null || exit 1
+        ;;
+esac
+
 # --- Auto-detect the MSVC tools root --------------------------------------
-# Looks for the highest-versioned directory under the VS BuildTools path.
+# Picks the highest-numbered MSVC version across every installed VS edition.
 # Override: set RIMAGE_MSVC_ROOT to the full MSVC tools path before sourcing.
 if [ -z "${RIMAGE_MSVC_ROOT:-}" ]; then
     _vs_base='/c/Program Files (x86)/Microsoft Visual Studio'
     _msvc_root=""
     if [ -d "$_vs_base" ]; then
-        # Search for any edition (BuildTools, Community, Professional, Enterprise)
-        # under VS 17 or 18, then pick the highest-numbered MSVC version.
-        for _edition in "$_vs_base"/*/BuildTools \
-                        "$_vs_base"/*/Community \
-                        "$_vs_base"/*/Professional \
-                        "$_vs_base"/*/Enterprise; do
-            _vc_tools="$_edition/VC/Tools/MSVC"
-            if [ -d "$_vc_tools" ]; then
-                # Pick the highest version directory (lexicographic = numeric
-                # for dotted version strings like 14.51.36231).
-                _found=$(ls -1 "$_vc_tools" 2>/dev/null | sort -V | tail -1)
-                if [ -n "$_found" ]; then
-                    _msvc_root="$_vc_tools/$_found"
-                    break
+        # Gather every MSVC tools tree from any edition (BuildTools,
+        # Community, Professional, Enterprise), then pick the highest
+        # version (lexicographic sort = numeric for dotted versions like
+        # 14.51.36231).
+        _msvc_root=$(
+            for _edition in "$_vs_base"/*/BuildTools \
+                            "$_vs_base"/*/Community \
+                            "$_vs_base"/*/Professional \
+                            "$_vs_base"/*/Enterprise; do
+                _vc_tools="$_edition/VC/Tools/MSVC"
+                if [ -d "$_vc_tools" ]; then
+                    for _ver in "$_vc_tools"/*; do
+                        [ -d "$_ver" ] && printf '%s\n' "$_ver"
+                    done
                 fi
-            fi
-        done
+            done | sort -V | tail -1
+        )
     fi
     if [ -z "$_msvc_root" ]; then
         echo "msvc-env: could not auto-detect MSVC tools root." >&2
@@ -50,6 +64,13 @@ if [ -z "${RIMAGE_MSVC_ROOT:-}" ]; then
     fi
 else
     _msvc_root="$RIMAGE_MSVC_ROOT"
+fi
+
+# An ARM64 host without the native tools installed can still use the
+# x64-hosted cross-compiler, which Windows on ARM runs emulated.
+if [ ! -d "$_msvc_root/bin/$_host_dir/$_arch" ] && [ -d "$_msvc_root/bin/Hostx64/$_arch" ]; then
+    echo "msvc-env: $_host_dir/$_arch not found, falling back to Hostx64/$_arch" >&2
+    _host_dir="Hostx64"
 fi
 
 # --- Auto-detect the Windows SDK version ---------------------------------
@@ -74,11 +95,11 @@ echo "msvc-env: detected MSVC root: $_msvc_root"
 echo "msvc-env: detected SDK ver:    $_sdk_ver"
 
 for _dir in \
-    "$_msvc_root/bin/Hostx64/x64" \
-    "$_msvc_root/lib/x64" \
-    "$_sdk_root/Lib/$_sdk_ver/ucrt/x64" \
-    "$_sdk_root/Lib/$_sdk_ver/um/x64" \
-    "$_sdk_root/bin/$_sdk_ver/x64"
+    "$_msvc_root/bin/$_host_dir/$_arch" \
+    "$_msvc_root/lib/$_arch" \
+    "$_sdk_root/Lib/$_sdk_ver/ucrt/$_arch" \
+    "$_sdk_root/Lib/$_sdk_ver/um/$_arch" \
+    "$_sdk_root/bin/$_sdk_ver/$_arch"
 do
     if [ ! -d "$_dir" ]; then
         echo "msvc-env: missing directory: $_dir" >&2
@@ -86,14 +107,14 @@ do
     fi
 done
 
-export PATH="$_sdk_root/bin/$_sdk_ver/x64:$_msvc_root/bin/Hostx64/x64:$PATH"
+export PATH="$_sdk_root/bin/$_sdk_ver/$_arch:$_msvc_root/bin/$_host_dir/$_arch:$PATH"
 
 # link.exe cannot read Git Bash's /c/... paths, so LIB and INCLUDE must use
 # native Windows paths with backslashes. `cygpath -w` does the conversion.
 _win() { cygpath -w "$1"; }
 
 # LIB tells link.exe where to resolve kernel32.lib & friends.
-export LIB="$(_win "$_msvc_root/lib/x64");$(_win "$_sdk_root/Lib/$_sdk_ver/ucrt/x64");$(_win "$_sdk_root/Lib/$_sdk_ver/um/x64")${LIB:+;$LIB}"
+export LIB="$(_win "$_msvc_root/lib/$_arch");$(_win "$_sdk_root/Lib/$_sdk_ver/ucrt/$_arch");$(_win "$_sdk_root/Lib/$_sdk_ver/um/$_arch")${LIB:+;$LIB}"
 
 # INCLUDE is needed when a -sys crate compiles C sources.
 export INCLUDE="$(_win "$_msvc_root/include");$(_win "$_sdk_root/Include/$_sdk_ver/ucrt");$(_win "$_sdk_root/Include/$_sdk_ver/um");$(_win "$_sdk_root/Include/$_sdk_ver/shared")${INCLUDE:+;$INCLUDE}"
@@ -101,11 +122,11 @@ export INCLUDE="$(_win "$_msvc_root/include");$(_win "$_sdk_root/Include/$_sdk_v
 # winresource (build.rs of this crate) resolves rc.exe from its own toolkit_path
 # instead of PATH, and derives that path from registry lookups that do not work
 # reliably here. RC_PATH short-circuits that lookup with an explicit path.
-export RC_PATH="$(_win "$_sdk_root/bin/$_sdk_ver/x64/rc.exe")"
+export RC_PATH="$(_win "$_sdk_root/bin/$_sdk_ver/$_arch/rc.exe")"
 
 _RC_PATH="$RC_PATH"
-unset _vs_base _edition _vc_tools _found _msvc_root _sdk_root _sdk_ver _dir
-unset RIMAGE_MSVC_ROOT RIMAGE_SDK_VER 2>/dev/null || true
+unset _vs_base _edition _vc_tools _ver _msvc_root _sdk_root _sdk_ver _dir _arch _host_dir
+unset RIMAGE_MSVC_ROOT RIMAGE_SDK_VER RIMAGE_ARCH 2>/dev/null || true
 
 echo "msvc-env: link -> $(command -v link)"
 echo "msvc-env: rc   -> $_RC_PATH"
