@@ -62,6 +62,13 @@ pub struct SvgOptions {
 /// quality of the source instead of resampling a rasterized image.
 pub struct SvgDecoder {
     tree: usvg::Tree,
+    /// The raw, unrounded intrinsic size.
+    ///
+    /// Kept as f32 because the decode-time scale factor must use the exact
+    /// value: rendering a 99.6px-wide vector into a 100px target calls for a
+    /// scale of 100/99.6, not 100/100. Callers that need integer pixels (the
+    /// resize callback) get their own rounded, `.max(1)`-clamped copy at the
+    /// call site.
     intrinsic: (f32, f32),
     target: (usize, usize),
 }
