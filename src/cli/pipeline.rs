@@ -728,7 +728,7 @@ fn svg_target_size(
     let plan = resize_plan(
         values
             .into_iter()
-            .zip(matches.indices_of("resize").unwrap())
+            .zip(matches.indices_of("resize").into_iter().flatten())
             .map(|(value, idx)| (idx, value))
             .take_while(|(idx, _)| *idx < first_other),
         size,
@@ -858,7 +858,7 @@ pub fn operations(
             let plan = resize_plan(
                 values
                     .into_iter()
-                    .zip(matches.indices_of("resize").unwrap())
+                    .zip(matches.indices_of("resize").into_iter().flatten())
                     .map(|(value, idx)| (idx, value))
                     .filter(|(idx, _)| !skip_resize || *idx >= first_other),
                 img.dimensions(),
@@ -891,7 +891,7 @@ pub fn operations(
 
             values
                 .into_iter()
-                .zip(matches.indices_of("quantization").unwrap())
+                .zip(matches.indices_of("quantization").into_iter().flatten())
                 .for_each(|(value, idx)| {
                     log::trace!("setup quantization {value} on index {idx}");
 
@@ -906,7 +906,7 @@ pub fn operations(
     if let Some(values) = matches.get_many::<bool>("premultiply") {
         values
             .into_iter()
-            .zip(matches.indices_of("premultiply").unwrap())
+            .zip(matches.indices_of("premultiply").into_iter().flatten())
             .for_each(|(value, idx)| {
                 // Position-sensitive flags inject a trailing default `false`
                 // occurrence when the flag is absent from the command line,
@@ -1551,7 +1551,7 @@ mod tests {
             .map(|(idx, _)| *idx)
             .collect();
 
-        let expected: Vec<usize> = matches.indices_of("resize").unwrap().skip(1).collect();
+        let expected: Vec<usize> = matches.indices_of("resize").into_iter().flatten().skip(1).collect();
         assert_eq!(resize_indices, expected);
     }
 
