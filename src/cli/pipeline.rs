@@ -923,16 +923,22 @@ pub fn operations(
                         Box::new(PremultiplyAlpha::new(AlphaState::PreMultiplied)),
                     );
 
-                    assert!(
-                        !map.contains_key(&(idx + 3)),
-                        "There is a operation at {} aborting",
-                        idx + 3
-                    );
-
-                    map.insert(
-                        idx + 3,
-                        Box::new(PremultiplyAlpha::new(AlphaState::NonPreMultiplied)),
-                    );
+                    // If a subsequent operation already occupies idx+3,
+                    // log a warning and skip the un-premultiply insertion
+                    // rather than aborting the process (which would happen
+                    // with `assert!` under `panic = "abort"` in release).
+                    if map.contains_key(&(idx + 3)) {
+                        log::warn!(
+                            "premultiply at index {idx}: position {} already occupied, \
+                             skipping un-premultiply step",
+                            idx + 3
+                        );
+                    } else {
+                        map.insert(
+                            idx + 3,
+                            Box::new(PremultiplyAlpha::new(AlphaState::NonPreMultiplied)),
+                        );
+                    }
                 } else {
                     log::warn!("No operation found for premultiply at index {idx}")
                 }
