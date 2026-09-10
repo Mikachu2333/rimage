@@ -63,10 +63,15 @@ impl FormatCaps {
 ///   specification (Profiles Overview) as 65536x65536 at `seq_level_idx=31`.
 ///   This bounds what a decoder must accept; it is *not* a promise that the
 ///   encoder will succeed at that size, so the memory budget still applies.
-/// - JPEG: libjpeg-derived implementations refuse dimensions above 65500 to
-///   avoid 16-bit overflow. The value is an implementation constant with no
-///   specification behind it, but it is a hard refusal rather than a quality
-///   trade-off, so it is enforced as an encoder capability.
+/// - JPEG and PNG: the zune decoders reject anything above the `max_width` /
+///   `max_height` in their `DecoderOptions`, which defaults to 16384 and is
+///   documented as respected by *all* decoders. This is deliberately not the
+///   larger figure the underlying codecs advertise (libjpeg's
+///   `JPEG_MAX_DIMENSION` is 65500): a limit that the decoder refuses before
+///   the codec is reached is the one a pre-check has to agree with, or the
+///   check passes a file that is then rejected further down with a worse
+///   message. Both decoders read the header before allocating, so 16384 is
+///   the size at which the pipeline stops, measured rather than guessed.
 /// - Anything absent from this table is unbounded here and left to the memory
 ///   budget plus the codec's own error reporting.
 pub const fn format_caps(format: ImageFormatId) -> FormatCaps {
@@ -81,15 +86,29 @@ pub const fn format_caps(format: ImageFormatId) -> FormatCaps {
             max_pixels: u64::MAX,
             source: "AVIF spec: AV1 coded image limit at seq_level_idx=31",
         },
-        // libjpeg-derived encoders abort above this to prevent overflow.
+        // The zune decoder's own ceiling, which it applies before the codec
+        // ever runs; see the module comment above.
         ImageFormatId::Jpeg => FormatCaps {
-            max_side: 65500,
+            max_side: DECODER_SIDE_LIMIT,
             max_pixels: u64::MAX,
-            source: "libjpeg JPEG_MAX_DIMENSION",
+            source: "zune-jpeg DecoderOptions::max_width default",
+        },
+        ImageFormatId::Png => FormatCaps {
+            max_side: DECODER_SIDE_LIMIT,
+            max_pixels: u64::MAX,
+            source: "zune-png DecoderOptions::max_width default",
         },
         _ => FormatCaps::UNBOUNDED,
     }
 }
+
+/// Side limit the zune decoders apply by default.
+///
+/// `zune_core::options::DecoderOptions` documents `max_width` and `max_height`
+/// as 16384 and "respected by all decoders". Both `zune-jpeg` and `zune-png`
+/// check it against the header before allocating, so it is a real ceiling
+/// rather than a suggestion.
+const DECODER_SIDE_LIMIT: u64 = 16384;
 
 /// Format identity used for limit lookup.
 ///
