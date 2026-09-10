@@ -25,7 +25,12 @@ const SVG_BYTES_PER_PIXEL: u64 = 4;
 
 const SVG_SIMULTANEOUS_PIXEL_BUFFERS: u64 = 3;
 
-/// Maximum number of pixels an SVG render target may cover.
+/// Maximum number of pixels an SVG render target may cover by default.
+///
+/// Used when a caller does not supply its own budget through
+/// [`SvgOptions::pixel_budget`]. The runtime-derived limit from
+/// `rimage::limits` is preferred; this constant is the fallback so the decoder
+/// is still safe when used on its own.
 pub const MAX_TARGET_PIXELS: u64 =
     MAX_SVG_DECODE_BYTES / (SVG_BYTES_PER_PIXEL * SVG_SIMULTANEOUS_PIXEL_BUFFERS);
 
@@ -40,8 +45,15 @@ pub struct SvgOptions {
     /// Explicit render target in pixels. When `None`, the SVG is rendered
     /// at its intrinsic size.
     ///
-    /// The resolved render target may not exceed [`MAX_TARGET_PIXELS`] pixels.
+    /// The resolved render target may not exceed the pixel budget.
     pub target_size: Option<(u32, u32)>,
+    /// Maximum pixels the render target may cover.
+    ///
+    /// `None` falls back to [`MAX_TARGET_PIXELS`]. Callers that can probe the
+    /// machine should pass a budget derived from
+    /// [`crate::limits::SystemBudget`] instead, so the ceiling tracks the
+    /// memory actually available rather than a constant.
+    pub pixel_budget: Option<u64>,
 }
 
 /// A decoder that renders SVG images into raster pixels using `resvg`.
@@ -113,6 +125,7 @@ impl SvgDecoder {
             &SvgOptions {
                 resources_dir,
                 target_size,
+                pixel_budget: None,
             },
             size,
         )?;
@@ -184,9 +197,10 @@ fn resolve_target_size(
     // The area is computed in u64 because width and height can each approach
     // u32::MAX, whose product overflows usize.
     let area = (width as u64) * (height as u64);
-    if area > MAX_TARGET_PIXELS {
+    let budget = options.pixel_budget.unwrap_or(MAX_TARGET_PIXELS);
+    if area > budget {
         return Err(ImageErrors::ImageDecodeErrors(format!(
-            "SVG target size {width}x{height} ({area} pixels) exceeds the limit of {MAX_TARGET_PIXELS} pixels ({MAX_SVG_DECODE_BYTES} byte decode budget), reduce the --resize target or the intrinsic size",
+            "SVG target size {width}x{height} ({area} pixels) exceeds the limit of {budget} pixels ({MAX_SVG_DECODE_BYTES} byte decode budget per {SVG_SIMULTANEOUS_PIXEL_BUFFERS} pixel buffers), reduce the --resize target or the intrinsic size",
         )));
     }
 

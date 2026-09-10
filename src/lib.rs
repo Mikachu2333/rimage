@@ -141,5 +141,12 @@ pub mod limits;
 /// involved. See [`error::RimageError`].
 pub mod error;
 
+/// Exit codes reported to the shell.
+///
+/// A caller can distinguish a clean success, a usage error, a failure reading
+/// an input, a failure writing an output, and a run that only partly succeeded
+/// without parsing stderr. See [`exit::ExitCode`].
+pub mod exit;
+
 #[cfg(test)]
 mod test_utils;
