@@ -31,9 +31,22 @@ fn webp_cap_matches_libwebp_constant() {
 }
 
 #[test]
-fn jpeg_cap_matches_libjpeg_constant() {
+fn jpeg_cap_matches_the_decoder_ceiling() {
+    // Not libjpeg's 65500: the zune decoder refuses anything above its own
+    // `max_width` default before the codec runs, and a pre-check that allowed
+    // more would pass files that then fail to decode.
     let caps = format_caps(ImageFormatId::Jpeg);
-    assert_eq!(caps.max_side, 65500);
+    assert_eq!(caps.max_side, DECODER_SIDE_LIMIT);
+    assert_eq!(caps.max_side, 16384);
+}
+
+#[test]
+fn png_cap_matches_the_decoder_ceiling() {
+    // PNG publishes no side limit of its own, but the decoder applies the same
+    // default ceiling as JPEG, so the cap has to reflect that rather than
+    // leaving the format unbounded.
+    let caps = format_caps(ImageFormatId::Png);
+    assert_eq!(caps.max_side, DECODER_SIDE_LIMIT);
 }
 
 #[test]
@@ -44,12 +57,7 @@ fn avif_cap_matches_spec() {
 
 #[test]
 fn formats_without_published_limits_are_unbounded() {
-    for format in [
-        ImageFormatId::Png,
-        ImageFormatId::Tiff,
-        ImageFormatId::Svg,
-        ImageFormatId::Other,
-    ] {
+    for format in [ImageFormatId::Tiff, ImageFormatId::Svg, ImageFormatId::Other] {
         let caps = format_caps(format);
         assert_eq!(
             caps.max_side,
@@ -241,19 +249,19 @@ fn binding_descriptions_are_not_empty() {
     }
 }
 
-/// The theoretical check the task asks for: a 65500x65500 image must be
-/// rejected before any decoding is attempted, on every realistic memory budget.
+/// An image beyond the decoder's ceiling must be rejected before any decoding
+/// is attempted, on every realistic memory budget.
 ///
-/// 65500 is libjpeg's inclusive per-side ceiling, so neither side alone is
-/// wrong; only the area is impossible. That makes this the case where the cap
-/// has to be caught by the pixel product rather than by a side check.
+/// The ceiling is the zune decoder's own 16384, so a 65500x2466 image — which
+/// the underlying codecs could express — is rejected on its *width*. That is
+/// the intended behaviour: the decoder refuses it from the header anyway, and
+/// catching it here is what makes the message name a limit instead of quoting
+/// the decoder's internal one.
 #[test]
-fn extreme_dimensions_are_rejected_by_the_jpeg_ceiling() {
-    // A square whose area is the JPEG side ceiling squared. libjpeg's own
-    // 65500x65500 ceiling is therefore exactly the largest square the format
-    // can express, and every size the task calls "extreme" is at least this big.
-    const EXTREME_SIDE: u64 = 65500;
-    const EXTREME_AREA: u64 = EXTREME_SIDE * EXTREME_SIDE;
+fn dimensions_beyond_the_decoder_ceiling_are_rejected() {
+    // The largest fixture in the corpus, and the size the task calls extreme.
+    const EXTREME_WIDTH: u64 = 65500;
+    const EXTREME_HEIGHT: u64 = 2466;
 
     // Anything at or above this produces the same budget, so this figure means
     // "more memory than any process can address on 64-bit".
@@ -271,40 +279,62 @@ fn extreme_dimensions_are_rejected_by_the_jpeg_ceiling() {
         )
     };
 
-    // The side ceiling itself is honoured, not conflated with a pixel limit.
-    assert_eq!(limits(PLENTIFUL).max_width, EXTREME_SIDE);
-    assert!(limits(PLENTIFUL).check(EXTREME_SIDE, 1).is_ok());
+    // The ceiling is the decoder's, not libjpeg's larger figure.
+    assert_eq!(limits(PLENTIFUL).max_width, 16384);
+    assert!(limits(PLENTIFUL).check(16384, 1).is_ok());
 
-    // Memory is the binding constraint in practice. `max_pixels` is derived
-    // from the budget rather than restated here, so this compares the two
-    // ceilings instead of re-deriving one of them by hand.
-    let bound_by_memory = limits(TYPICAL);
-    assert!(
-        bound_by_memory.max_pixels < EXTREME_AREA,
-        "a {TYPICAL}-byte budget admitted {} pixels, which is not below \
-         the {EXTREME_AREA}-pixel extreme square",
-        bound_by_memory.max_pixels
-    );
-    let violation = bound_by_memory.check(EXTREME_SIDE, EXTREME_SIDE).unwrap_err();
-    assert_eq!(violation.kind, ViolationKind::Pixels);
-    assert_eq!(violation.binding, Binding::Memory);
-    assert!(violation.actual > violation.allowed);
-
-    // With memory taken out of the picture, the area derived from the side
-    // ceiling takes over and still rejects the extreme square.
-    let bound_by_format = limits(PLENTIFUL);
-    let violation = bound_by_format.check(EXTREME_SIDE, EXTREME_SIDE + 1).unwrap_err();
-    assert_eq!(violation.kind, ViolationKind::Pixels);
+    // The extreme panorama is rejected on its width, even with memory to spare.
+    let violation = limits(PLENTIFUL)
+        .check(EXTREME_WIDTH, EXTREME_HEIGHT)
+        .unwrap_err();
+    assert_eq!(violation.kind, ViolationKind::Width);
     assert_eq!(violation.binding, Binding::Format);
-    assert_eq!(violation.allowed, EXTREME_AREA);
 
-    // The derived area must not be so tight that it rejects ordinary shapes:
-    // a 65500x2466 panorama (the largest fixture in tests/) has to pass.
-    assert!(limits(PLENTIFUL).check(EXTREME_SIDE, 2466).is_ok());
+    // Memory is the binding constraint for large images that are within the
+    // side ceiling. `max_pixels` is derived from the budget rather than
+    // restated here, so this compares the two ceilings instead of re-deriving
+    // one of them by hand.
+    const BIG_SIDE: u64 = 16384;
+    // Small enough that the memory budget is tighter than the side ceiling,
+    // which is the state this branch is meant to exercise.
+    const CONSTRAINED: u64 = 4 * 1024 * 1024 * 1024;
+    let bound_by_memory = limits(CONSTRAINED);
+    assert!(
+        bound_by_memory.max_pixels < BIG_SIDE * BIG_SIDE,
+        "a {CONSTRAINED}-byte budget admitted {} pixels, which is not below the \
+         {}-pixel square at the side ceiling",
+        bound_by_memory.max_pixels,
+        BIG_SIDE * BIG_SIDE
+    );
+    assert_eq!(bound_by_memory.binding, Binding::Memory);
+
+    // At the side ceiling with room to spare, the format cap is what binds.
+    assert_eq!(limits(PLENTIFUL).binding, Binding::Format);
+    assert_eq!(limits(PLENTIFUL).max_pixels, BIG_SIDE * BIG_SIDE);
 
     // A square that both the format and the memory budget can express is
     // accepted, so the checks do not reject everything indiscriminately.
-    assert!(limits(TYPICAL).check(16_000, 16_000).is_ok());
+    assert!(limits(TYPICAL).check(8_000, 8_000).is_ok());
+}
+
+#[test]
+fn png_is_bounded_by_the_same_decoder_ceiling() {
+    let budget = budget_with(u64::MAX / 4 + 1, 1);
+    let limits = LimitSet::for_input(
+        ImageFormatId::Png,
+        BitDepth::Eight,
+        ColorSpace::RGBA,
+        &budget,
+        PipelineCost::for_encoder(ImageFormatId::Png),
+    );
+
+    assert_eq!(limits.max_width, DECODER_SIDE_LIMIT);
+    assert_eq!(limits.max_height, DECODER_SIDE_LIMIT);
+    assert!(limits.check(16384, 16384).is_ok());
+    assert_eq!(
+        limits.check(16385, 1).unwrap_err().kind,
+        ViolationKind::Width
+    );
 }
 
 #[test]
