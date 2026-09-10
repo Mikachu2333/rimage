@@ -679,7 +679,7 @@ pub fn classify_input(
         .map(ImageFormatId::from_extension)
         .unwrap_or(ImageFormatId::Other);
 
-    let error = match error {
+    match error {
         ImageErrors::ImageDecoderNotImplemented(_) => RimageError::Input(
             InputError::UnsupportedFormat {
                 path: path.to_path_buf(),
@@ -740,9 +740,7 @@ pub fn classify_input(
             format,
             cause: clone_image_errors(other),
         }),
-    };
-
-    error
+    }
 }
 
 /// Classify something that went wrong while writing `path`.
