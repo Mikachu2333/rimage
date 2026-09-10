@@ -3,6 +3,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(windows)]
+use std::ffi::OsStr;
+
 use super::*;
 
 fn unique_test_dir(name: &str) -> PathBuf {
@@ -339,6 +342,26 @@ fn expand_file_lists_without_lists_keeps_all_inputs() {
     expected.sort();
     assert_eq!(files, expected);
     fs::remove_dir_all(root).unwrap();
+}
+
+/// Win32 strips trailing dots and spaces from file names before writing, so
+/// accepting them would silently redirect the output to a different file —
+/// and "CON .png" would normalise onto the reserved CON device.
+#[cfg(windows)]
+#[test]
+fn windows_output_names_cannot_end_in_a_dot_or_space() {
+    for bad in ["out.", "out ", "out. ", "CON .png", "con.txt", "NUL."] {
+        assert!(
+            validate_output_file_name(OsStr::new(bad)).is_err(),
+            "{bad:?} must be rejected"
+        );
+    }
+    for ok in ["out.jpg", "out .jpg", "out..jpg", "concepts.png", "logo.png"] {
+        assert!(
+            validate_output_file_name(OsStr::new(ok)).is_ok(),
+            "{ok:?} must be accepted"
+        );
+    }
 }
 
 #[cfg(unix)]
