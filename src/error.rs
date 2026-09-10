@@ -369,18 +369,29 @@ fn size_limit_hint(
     violation: &LimitViolation,
     verb: &str,
 ) -> String {
+    // A volume running out of space is not something resizing the image fixes
+    // in general: the destination is the thing that has to change. Naming the
+    // free space to aim for is more useful than restating the pixel ceiling.
+    if violation.kind == ViolationKind::Bytes {
+        return format!(
+            "free up space on the destination volume, or write elsewhere; \
+             writing this image needs about {} but only {} is allowed (from {})",
+            human_bytes(violation.actual),
+            human_bytes(violation.allowed),
+            violation.binding.describe()
+        );
+    }
+
     let measured = match violation.kind {
         ViolationKind::Width => "width",
         ViolationKind::Height => "height",
         ViolationKind::Pixels => "total pixel count",
+        ViolationKind::Bytes => unreachable!("handled above"),
     };
 
     format!(
         "{verb} the image so its {measured} is at most {}; this limit comes from {}",
-        match violation.kind {
-            ViolationKind::Width | ViolationKind::Height => human_count(violation.allowed),
-            ViolationKind::Pixels => human_count(violation.allowed),
-        },
+        human_count(violation.allowed),
         violation.binding.describe()
     ) + &match dimensions {
         Some((w, h)) => format!(" (this image is {w}x{h})"),
@@ -500,13 +511,21 @@ fn write_violation(f: &mut Formatter<'_>, violation: &LimitViolation) -> fmt::Re
         ViolationKind::Width => "width",
         ViolationKind::Height => "height",
         ViolationKind::Pixels => "pixel count",
+        ViolationKind::Bytes => "estimated size",
+    };
+
+    let (actual, allowed) = if violation.kind == ViolationKind::Bytes {
+        (human_bytes(violation.actual), human_bytes(violation.allowed))
+    } else {
+        (
+            human_count(violation.actual),
+            human_count(violation.allowed),
+        )
     };
 
     write!(
         f,
-        "{measured} {} exceeds the limit of {} (from {})",
-        human_count(violation.actual),
-        human_count(violation.allowed),
+        "{measured} {actual} exceeds the limit of {allowed} (from {})",
         violation.binding.describe()
     )
 }

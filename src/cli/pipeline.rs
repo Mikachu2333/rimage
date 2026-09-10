@@ -64,7 +64,9 @@ fn decode_options() -> DecoderOptions {
 /// violation is resolved here and would otherwise have to be re-parsed out of a
 /// string to be reported.
 #[cfg(feature = "limits")]
-fn check_input_limits(path: &Path) -> Result<(), rimage::error::RimageError> {
+fn check_input_limits(
+    path: &Path, matches: &ArgMatches,
+) -> Result<(), rimage::error::RimageError> {
     use rimage::limits::{ImageFormatId, LimitSet, PipelineCost, SystemBudget};
 
     let extension = path
@@ -85,7 +87,7 @@ fn check_input_limits(path: &Path) -> Result<(), rimage::error::RimageError> {
         return Ok(());
     };
 
-    let budget = SystemBudget::probe(concurrency_from_env());
+    let budget = SystemBudget::probe(concurrency_from_env(matches));
     let limits = LimitSet::for_input(
         format,
         zune_core::bit_depth::BitDepth::Eight,
@@ -103,42 +105,74 @@ fn check_input_limits(path: &Path) -> Result<(), rimage::error::RimageError> {
 
 /// Read just the dimensions from an image header.
 ///
-/// Only JPEG is handled here. It is the format with a published per-side limit
-/// that a header read can settle cheaply, and it is the one the task names for
-/// the extreme case. Other formats are bounded by memory alone, which the
-/// decoders enforce on the buffer they actually allocate; probing their headers
-/// here would duplicate that check without adding a format limit.
+/// Only the formats with a *published per-side limit* are handled here. They
+/// are the ones a cheap header read can settle, and rejecting them up front is
+/// what turns an oversized input into a message naming the ceiling instead of
+/// an allocation abort inside the codec.
+///
+/// Formats with no published side limit are bounded by the memory budget,
+/// which the decoder applies to the buffer it actually allocates; probing their
+/// headers here would duplicate that check without adding a format limit.
 #[cfg(feature = "limits")]
 fn probe_dimensions<R: std::io::Read>(
     mut reader: R, format: rimage::limits::ImageFormatId,
 ) -> Option<(u64, u64)> {
     use rimage::limits::ImageFormatId;
-    use zune_core::bytestream::ZCursor;
 
     match format {
         ImageFormatId::Jpeg => {
-            // A JPEG header sits at the front of the file, so only a prefix is
-            // needed. Reading a bounded prefix rather than the whole file is
-            // what keeps rejecting an oversized input cheap.
-            let mut prefix = vec![0u8; JPEG_HEADER_PROBE_BYTES];
-            let mut filled = 0;
-            while filled < prefix.len() {
-                match reader.read(&mut prefix[filled..]) {
-                    Ok(0) => break,
-                    Ok(read) => filled += read,
-                    Err(_) => return None,
-                }
-            }
-            prefix.truncate(filled);
+            use zune_core::bytestream::ZCursor;
 
-            let mut decoder =
-                zune_image::codecs::jpeg::JpegDecoder::new(ZCursor::new(prefix));
+            let prefix = read_prefix(&mut reader, JPEG_HEADER_PROBE_BYTES)?;
+
+            let mut decoder = zune_image::codecs::jpeg::JpegDecoder::new(ZCursor::new(prefix));
             decoder.decode_headers().ok()?;
             let (width, height) = decoder.dimensions()?;
             Some((width as u64, height as u64))
         }
+        ImageFormatId::WebP => {
+            // libwebp exposes a bitstream-features probe that parses the RIFF
+            // container and the frame header without decoding any pixels.
+            #[cfg(feature = "webp")]
+            {
+                let prefix = read_prefix(&mut reader, WEBP_HEADER_PROBE_BYTES)?;
+                let features = webp::BitstreamFeatures::new(&prefix)?;
+                Some((features.width() as u64, features.height() as u64))
+            }
+
+            #[cfg(not(feature = "webp"))]
+            {
+                let _ = &mut reader;
+                None
+            }
+        }
         _ => None,
     }
+}
+
+/// Read up to `limit` bytes from the front of `reader`.
+///
+/// Returns `None` when nothing could be read. A short read is not an error: a
+/// file too small to hold a header simply is not pre-checked, and the decoder
+/// gets to report the real problem.
+#[cfg(feature = "limits")]
+fn read_prefix<R: std::io::Read>(reader: &mut R, limit: usize) -> Option<Vec<u8>> {
+    let mut prefix = vec![0u8; limit];
+    let mut filled = 0;
+    while filled < prefix.len() {
+        match reader.read(&mut prefix[filled..]) {
+            Ok(0) => break,
+            Ok(read) => filled += read,
+            Err(_) => return None,
+        }
+    }
+
+    if filled == 0 {
+        return None;
+    }
+
+    prefix.truncate(filled);
+    Some(prefix)
 }
 
 /// Bytes of a file read to recover a JPEG frame header.
@@ -150,15 +184,28 @@ fn probe_dimensions<R: std::io::Read>(
 #[cfg(feature = "limits")]
 const JPEG_HEADER_PROBE_BYTES: usize = 64 * 1024;
 
-/// The concurrency the pipeline will actually use, read from the same argument
-/// the worker pool is sized from.
+/// Bytes of a file read to recover a WebP bitstream header.
 ///
-/// Defaults to 1, matching `--threads`.
+/// The RIFF header and the frame header precede the compressed payload, so a
+/// small prefix is enough for every WebP variant.
+#[cfg(all(feature = "limits", feature = "webp"))]
+const WEBP_HEADER_PROBE_BYTES: usize = 64 * 1024;
+
+/// The concurrency the pipeline will actually use for `matches`.
+///
+/// Read from the same `-t/--threads` argument `main` sizes its worker pool
+/// from, so the memory budget divides by the number of images that will really
+/// be in flight. Defaults to 1, matching the flag's own default.
+///
+/// This is deliberately not read from the environment: a second, silently
+/// different source of truth for the same number is how a budget ends up sized
+/// for one image while four are being decoded.
 #[cfg(feature = "limits")]
-fn concurrency_from_env() -> usize {
-    std::env::var("RIMAGE_THREADS")
-        .ok()
-        .and_then(|value| value.parse().ok())
+fn concurrency_from_env(matches: &ArgMatches) -> usize {
+    matches
+        .get_one::<u8>("threads")
+        .copied()
+        .map(|threads| threads as usize)
         .filter(|threads| *threads > 0)
         .unwrap_or(1)
 }
@@ -169,11 +216,43 @@ pub fn decode<P: AsRef<Path>>(f: P, matches: &ArgMatches) -> Result<Image, rimag
     // The size pre-check already knows which ceiling it broke, so it produces
     // the structured error directly instead of round-tripping through a string.
     #[cfg(feature = "limits")]
-    check_input_limits(f.as_ref())?;
+    check_input_limits(f.as_ref(), matches)?;
 
     Image::open_with_options(f.as_ref(), decode_options())
         .or_else(|e| decode_with_fallback(f.as_ref(), matches, e))
         .map_err(|e| classify_decode_failure(f.as_ref(), matches, &e))
+}
+
+/// Pixel budget an SVG rasterisation may cover, derived from the machine.
+///
+/// The SVG decoder has its own conservative constant for standalone use, but
+/// this program can probe the machine, so the render target is bounded by the
+/// same memory model every other format uses rather than by a fixed 512 MiB.
+/// Returns `None` when the `limits` feature is off, which makes the decoder
+/// fall back to its own constant.
+#[cfg(feature = "svg")]
+fn svg_pixel_budget(matches: &ArgMatches) -> Option<u64> {
+    #[cfg(feature = "limits")]
+    {
+        use rimage::limits::{ImageFormatId, LimitSet, PipelineCost, SystemBudget};
+
+        let budget = SystemBudget::probe(concurrency_from_env(matches));
+        let limits = LimitSet::for_input(
+            ImageFormatId::Svg,
+            zune_core::bit_depth::BitDepth::Eight,
+            zune_core::colorspace::ColorSpace::RGBA,
+            &budget,
+            PipelineCost::for_encoder(ImageFormatId::Svg),
+        );
+
+        Some(limits.max_pixels)
+    }
+
+    #[cfg(not(feature = "limits"))]
+    {
+        let _ = matches;
+        None
+    }
 }
 
 /// Retry the decode with the decoders `zune_image` does not own.
@@ -195,11 +274,13 @@ fn decode_with_fallback(
                     .is_some_and(|f| f.eq_ignore_ascii_case("svg") | f.eq_ignore_ascii_case("svgz"))
                 {
                     let resources_dir = path.parent().map(Path::to_path_buf);
+                    let pixel_budget = svg_pixel_budget(matches);
 
                     #[cfg(feature = "resize")]
-                    let decoder = SvgDecoder::try_new_with_resize(file, resources_dir, |size| {
-                        svg_target_size(matches, size)
-                    })?;
+                    let decoder =
+                        SvgDecoder::try_new_with_resize_and_budget(file, resources_dir, pixel_budget, |size| {
+                            svg_target_size(matches, size)
+                        })?;
 
                     #[cfg(not(feature = "resize"))]
                     let decoder = SvgDecoder::try_new_with_options(
@@ -207,7 +288,7 @@ fn decode_with_fallback(
                         SvgOptions {
                             resources_dir,
                             target_size: None,
-                            pixel_budget: None,
+                            pixel_budget,
                         },
                     )?;
 
@@ -1241,6 +1322,19 @@ mod tests {
 #[cfg(all(test, feature = "limits"))]
 mod limit_tests {
     use super::*;
+    use crate::cli::cli;
+
+    /// Builds the codec subcommand matches the way `main` passes them to
+    /// [`decode`]. Local to this module because the shared helper lives behind
+    /// the `resize` feature, and the limit checks must be testable without it.
+    fn matches_from(args: &[&str]) -> ArgMatches {
+        cli()
+            .get_matches_from(args)
+            .subcommand()
+            .expect("clap ensures a subcommand is always provided")
+            .1
+            .clone()
+    }
 
     /// A JPEG header probe must recover the real dimensions from an ordinary
     /// file, or the pre-check would silently never fire.
@@ -1266,6 +1360,20 @@ mod limit_tests {
         );
     }
 
+    /// WebP has a published 16383-per-side limit, so its header must be
+    /// readable without decoding. The bitstream-features probe is what makes
+    /// that possible; if it ever stops working the check silently goes dead.
+    #[cfg(feature = "webp")]
+    #[test]
+    fn a_webp_header_probe_reads_the_real_dimensions() {
+        let file = File::open("tests/files/webp/f1t.webp").unwrap();
+
+        let (width, height) = probe_dimensions(file, rimage::limits::ImageFormatId::WebP)
+            .expect("the fixture's header must be readable");
+
+        assert!(width > 0 && height > 0, "got {width}x{height}");
+    }
+
     /// A file too short to contain a frame header must be reported as
     /// unprobeable rather than as an error, so decoding still gets its chance.
     #[test]
@@ -1279,7 +1387,9 @@ mod limit_tests {
     /// does not reject files the program is expected to handle.
     #[test]
     fn an_ordinary_image_passes_the_pre_check() {
-        check_input_limits(Path::new("tests/files/jpg/f1t.jpg"))
+        let matches = matches_from(&["rimage", "mozjpeg", "tests/files/jpg/f1t.jpg"]);
+
+        check_input_limits(Path::new("tests/files/jpg/f1t.jpg"), &matches)
             .expect("an ordinary fixture must not be rejected");
     }
 
@@ -1287,6 +1397,22 @@ mod limit_tests {
     /// than being turned into a size error here.
     #[test]
     fn a_missing_file_is_not_a_size_error() {
-        assert!(check_input_limits(Path::new("tests/files/does-not-exist.jpg")).is_ok());
+        let matches = matches_from(&["rimage", "mozjpeg", "tests/files/does-not-exist.jpg"]);
+
+        assert!(
+            check_input_limits(Path::new("tests/files/does-not-exist.jpg"), &matches).is_ok()
+        );
+    }
+
+    /// The budget must divide by the concurrency the pipeline really uses.
+    /// Reading a stale environment variable here would silently size the
+    /// budget for one image while `--threads` ran several.
+    #[test]
+    fn the_memory_budget_follows_the_threads_flag() {
+        let single = matches_from(&["rimage", "mozjpeg", "image.jpg"]);
+        assert_eq!(concurrency_from_env(&single), 1);
+
+        let four = matches_from(&["rimage", "mozjpeg", "--threads", "4", "image.jpg"]);
+        assert_eq!(concurrency_from_env(&four), 4);
     }
 }

@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 use zune_core::{bit_depth::BitDepth, colorspace::ColorSpace};
 use zune_image::{
     core_filters::{colorspace::ColorspaceConv, depth::Depth},
+    image::Image,
     traits::OperationsTrait,
 };
 use zune_imageprocs::auto_orient::AutoOrient;
@@ -366,6 +367,61 @@ fn size_ratio(output_size: u64, input_size: u64) -> f64 {
     } else {
         output_size as f64 / input_size as f64
     }
+}
+
+/// Refuse to write `img` when the destination volume cannot hold the result.
+///
+/// Returns the failure wrapped for the caller's side — an unwritable output —
+/// because a full volume is a property of the destination, not of the image.
+///
+/// The estimate deliberately uses the *decoded* footprint rather than a
+/// compressed-size guess: it is the one number this code can know without
+/// encoding first, and it is an upper bound for lossy formats and the right
+/// order of magnitude for lossless ones, which is what a pre-flight check
+/// needs. A volume with room for the decoded pixels will hold any sane
+/// encoding of them.
+#[cfg(feature = "limits")]
+fn check_output_limits(
+    output: &Path, img: &Image, encoder_name: &str,
+) -> std::result::Result<(), rimage::error::RimageError> {
+    use rimage::limits::{ImageFormatId, LimitSet, PipelineCost, SystemBudget, bytes_per_pixel};
+
+    let format = ImageFormatId::from_encoder_name(encoder_name);
+
+    // Only formats with a byte-relevant ceiling need the probe. For everything
+    // else `for_output` still yields the pixel limits, whose byte half is the
+    // memory budget rather than free space, and comparing against that would
+    // reject an image that fits on disk merely because it is near the memory
+    // ceiling — the exact case the decoder already decided.
+    let Some(_free) = rimage::limits::free_space_at(output) else {
+        return Ok(());
+    };
+    let budget = SystemBudget::probe(1);
+    let limits = LimitSet::for_output(
+        format,
+        img.depth(),
+        img.colorspace(),
+        &budget,
+        PipelineCost::for_encoder(format),
+        output,
+    );
+
+    // The byte ceiling only describes *this volume* when free space was the
+    // binding constraint. Otherwise it is the memory budget in disguise, and
+    // rejecting on it would duplicate the decode-time check under a message
+    // about disk space.
+    if limits.bytes_binding != rimage::limits::Binding::Disk {
+        return Ok(());
+    }
+
+    let (width, height) = img.dimensions();
+    let footprint = (width as u64)
+        .saturating_mul(height as u64)
+        .saturating_mul(bytes_per_pixel(img.depth(), img.colorspace()));
+
+    limits
+        .check_bytes(footprint)
+        .map_err(|violation| rimage::error::output_size_limit(output, format, violation))
 }
 
 fn space_saved(input_size: u64, output_size: u64) -> i64 {
@@ -1045,6 +1101,16 @@ fn main() -> std::process::ExitCode {
                         }
 
                         pb.set_style(sty_aux_encode.clone());
+
+                        // Reject an output the destination volume cannot hold
+                        // *before* encoding into a temporary file. The encode
+                        // itself is the expensive part, and a volume that fills
+                        // up mid-write leaves a truncated temporary behind. The
+                        // estimate is the decoded footprint, which is the right
+                        // order of magnitude for both lossless expansion and
+                        // lossy output plus container overhead.
+                        #[cfg(feature = "limits")]
+                        fail_pipeline!(state, check_output_limits(&output, &img, subcommand));
 
                         fail_file!(
                             output,
