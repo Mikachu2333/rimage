@@ -25,7 +25,7 @@ fn decoder_not_implemented_becomes_an_unsupported_format_input_error() {
         zune_image::codecs::ImageFormat::Unknown,
     );
 
-    let classified = classify_input(&jpeg_path(), &error, None).unwrap();
+    let classified = classify_input(&jpeg_path(), &error, None);
 
     assert_eq!(classified.direction(), Direction::Input);
     assert_eq!(classified.kind(), "input.unsupported-format");
@@ -39,7 +39,7 @@ fn decoder_not_implemented_becomes_an_unsupported_format_input_error() {
 fn missing_decoder_feature_is_distinguished_from_a_missing_decoder() {
     let error = ImageErrors::ImageDecoderNotIncluded(zune_image::codecs::ImageFormat::JPEG);
 
-    let classified = classify_input(&jpeg_path(), &error, None).unwrap();
+    let classified = classify_input(&jpeg_path(), &error, None);
     let message = classified.to_string();
 
     assert!(message.contains("build time"), "{message}");
@@ -54,8 +54,7 @@ fn a_resize_refusal_is_an_input_error_not_a_decode_error() {
         &jpeg_path(),
         &error,
         Some(("the result does not fit in 32 bits", (70_000, 70_000))),
-    )
-    .unwrap();
+    );
 
     assert_eq!(classified.kind(), "input.invalid-resize");
     let message = classified.to_string();
@@ -68,14 +67,14 @@ fn a_resize_refusal_without_context_falls_back_to_a_decode_error() {
     // Dropping the caller's context must not lose the error entirely.
     let error = ImageErrors::ImageOperationNotImplemented("resize", depth_of_first_supported());
 
-    let classified = classify_input(&jpeg_path(), &error, None).unwrap();
+    let classified = classify_input(&jpeg_path(), &error, None);
 
     assert_eq!(classified.kind(), "input.decode");
 }
 
 #[test]
 fn a_generic_decode_failure_names_the_file_and_format() {
-    let classified = classify_input(&jpeg_path(), &decode_failure(), None).unwrap();
+    let classified = classify_input(&jpeg_path(), &decode_failure(), None);
 
     assert_eq!(classified.kind(), "input.decode");
     let message = classified.to_string();
@@ -88,7 +87,7 @@ fn a_generic_decode_failure_names_the_file_and_format() {
 fn the_message_does_not_end_in_a_stray_newline() {
     // `ImageErrors`' Display adds a trailing newline; ours must not inherit it,
     // or every log line gains a blank line after it.
-    let classified = classify_input(&jpeg_path(), &decode_failure(), None).unwrap();
+    let classified = classify_input(&jpeg_path(), &decode_failure(), None);
 
     assert!(!classified.to_string().ends_with('\n'));
 }
@@ -96,7 +95,7 @@ fn the_message_does_not_end_in_a_stray_newline() {
 #[test]
 fn an_unknown_extension_is_reported_as_a_generic_image() {
     let error = decode_failure();
-    let classified = classify_input(Path::new("mystery.qoi"), &error, None).unwrap();
+    let classified = classify_input(Path::new("mystery.qoi"), &error, None);
 
     assert!(classified.to_string().contains("image"), "{classified}");
 }
@@ -194,8 +193,7 @@ fn an_svg_size_limit_marker_becomes_a_structured_size_limit() {
          or the intrinsic size",
     ));
 
-    let classified = classify_input(&path, &error, None)
-        .expect("SVG marker is a recognised, classified input failure");
+    let classified = classify_input(&path, &error, None);
 
     match classified {
         RimageError::Input(InputError::SizeLimit {
@@ -233,7 +231,7 @@ fn an_svg_decode_error_without_the_marker_still_routes_to_decode() {
     let path = PathBuf::from("poster.svg");
     let error = ImageErrors::ImageDecodeErrors("Unable to parse SVG - oops".to_string());
 
-    let classified = classify_input(&path, &error, None).expect("classifies");
+    let classified = classify_input(&path, &error, None);
     assert!(matches!(
         classified,
         RimageError::Input(InputError::Decode { .. })
