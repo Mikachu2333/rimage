@@ -845,7 +845,7 @@ fn main() -> std::process::ExitCode {
 
     match matches.subcommand() {
         Some((subcommand, matches)) => {
-            let threads = matches.get_one::<u8>("threads").copied().unwrap_or(1) as usize;
+            let threads = matches.get_one::<u16>("threads").copied().unwrap_or(1) as usize;
 
             // Hidden diagnostic: print the runtime-derived limits and exit
             // before touching any files. Used to understand why an image was
