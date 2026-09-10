@@ -102,14 +102,83 @@ fn an_unknown_extension_is_reported_as_a_generic_image() {
 }
 
 #[test]
-fn classify_output_declines_rather_than_guessing_the_format() {
+fn classify_output_routes_an_encode_error_with_the_path_extension_format() {
     let error = ImageErrors::EncodeErrors(ImgEncodeErrors::ImageEncodeErrors(
         "webp encoding failed".to_string(),
     ));
 
-    // Documented contract: an encoder failure cannot be attributed to a format
-    // from the value alone, so it is left unclassified on purpose.
-    assert!(classify_output(&jpeg_path(), &error).is_none());
+    // The output path extension is authoritative: the encoder picks it, so the
+    // format tag is reliable even though the error value does not carry it.
+    let classified = classify_output(&jpeg_path(), &error).unwrap();
+
+    assert_eq!(classified.direction(), Direction::Output);
+    assert_eq!(classified.kind(), "output.encode");
+    let message = classified.to_string();
+    assert!(message.contains("photo.jpg"), "{message}");
+    assert!(message.contains("jpeg"), "{message}");
+    assert!(message.contains("webp encoding failed"), "{message}");
+}
+
+#[test]
+fn classify_output_routes_an_io_error_to_output_io() {
+    let error = ImageErrors::IoError(std::io::Error::new(
+        std::io::ErrorKind::StorageFull,
+        "No space left on device",
+    ));
+
+    let classified = classify_output(&jpeg_path(), &error).unwrap();
+
+    assert_eq!(classified.kind(), "output.io");
+    assert!(classified.to_string().contains("photo.jpg"));
+}
+
+#[test]
+fn output_encode_error_uses_the_encoder_name_for_the_format_tag() {
+    let error = ImageErrors::EncodeErrors(ImgEncodeErrors::ImageEncodeErrors(
+        "encode failed".to_string(),
+    ));
+
+    // `mozjpeg` writes `.jpg`, so the format tag is `jpeg` even though the
+    // encoder name does not contain "jpeg" literally.
+    let classified = output_encode_error(&jpeg_path(), "mozjpeg", &error);
+
+    assert_eq!(classified.kind(), "output.encode");
+    let message = classified.to_string();
+    assert!(message.contains("jpeg"), "{message}");
+    assert!(message.contains("encode failed"), "{message}");
+}
+
+#[test]
+fn output_io_error_preserves_the_io_kind_for_hint_routing() {
+    let error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+
+    let classified = output_io_error(&PathBuf::from("readonly/out.png"), &error);
+
+    assert_eq!(classified.kind(), "output.io");
+    assert_eq!(classified.path(), Path::new("readonly/out.png"));
+    // PermissionDenied errors get a hint, so the user knows what to fix.
+    assert!(classified.hint().unwrap().contains("permission"));
+}
+
+#[test]
+fn output_io_error_without_a_specific_kind_has_no_hint() {
+    let error = std::io::Error::other("disk on fire");
+
+    let classified = output_io_error(&PathBuf::from("out.png"), &error);
+
+    assert_eq!(classified.kind(), "output.io");
+    assert!(classified.hint().is_none());
+}
+
+#[test]
+fn output_io_error_storage_full_has_a_hint() {
+    let error = std::io::Error::new(std::io::ErrorKind::StorageFull, "disk full");
+
+    let classified = output_io_error(&PathBuf::from("out.png"), &error);
+
+    assert_eq!(classified.kind(), "output.io");
+    let hint = classified.hint().expect("StorageFull must produce a hint");
+    assert!(hint.contains("free up space"), "{hint}");
 }
 
 #[cfg(feature = "svg")]
