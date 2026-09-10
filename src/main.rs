@@ -1482,19 +1482,13 @@ mod tests {
     use super::*;
 
     fn test_base() -> PathBuf {
-        if cfg!(windows) {
-            PathBuf::from(r"D:\projects\rimage")
-        } else {
-            PathBuf::from("/projects/rimage")
-        }
+        // Use the crate root (CARGO_MANIFEST_DIR) instead of a hardcoded
+        // path that only works on one developer's machine.
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
     }
 
     fn test_base_src() -> PathBuf {
-        if cfg!(windows) {
-            PathBuf::from(r"D:\projects\rimage\src")
-        } else {
-            PathBuf::from("/projects/rimage/src")
-        }
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")
     }
 
     #[test]
