@@ -24,6 +24,14 @@ pub struct WebPDecoder<R: Read> {
     phantom: PhantomData<R>,
 }
 
+/// Upper bound on a WebP file read into memory before decoding.
+///
+/// libwebp has no file-size ceiling, and the static decoder path reads the
+/// whole file before it can tell whether the bitstream is valid, so a hostile
+/// multi-gigabyte "webp" would exhaust memory before any format check ran.
+/// 256 MiB is far beyond any real WebP and matches the SVG decoder's cap.
+const MAX_WEBP_BYTES: u64 = 256 * 1024 * 1024;
+
 impl<R: Read> WebPDecoder<R> {
     /// Create a new webp decoder that reads data from `source`
     pub fn try_new(source: R) -> Result<WebPDecoder<R>, ImageErrors> {
@@ -32,10 +40,16 @@ impl<R: Read> WebPDecoder<R> {
 
     /// Create a new webp decoder with explicit [`DecoderOptions`].
     pub fn try_new_with_options(
-        mut source: R, _options: DecoderOptions
+        source: R, _options: DecoderOptions
     ) -> Result<WebPDecoder<R>, ImageErrors> {
         let mut buf = Vec::new();
-        source.read_to_end(&mut buf)?;
+        source.take(MAX_WEBP_BYTES + 1).read_to_end(&mut buf)?;
+        if buf.len() as u64 > MAX_WEBP_BYTES {
+            return Err(ImageErrors::ImageDecodeErrors(format!(
+                "WebP input exceeds the {} MiB read limit",
+                MAX_WEBP_BYTES / 1024 / 1024
+            )));
+        }
 
         // `Decoder::decode` returns `None` for animated files as well as for
         // any other failure, so it cannot be the only path: it is the cheap
