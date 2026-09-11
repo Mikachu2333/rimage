@@ -1894,12 +1894,21 @@ mod limit_tests {
     /// The budget must divide by the concurrency the pipeline really uses.
     /// Reading a stale environment variable here would silently size the
     /// budget for one image while `--threads` ran several.
+    ///
+    /// The value is taken from the host rather than written as a literal,
+    /// because clap bounds `--threads` by the parallelism it sees: a hardcoded
+    /// 4 is rejected at parse time on the three-core macOS runners. On a
+    /// single-core host the flag can only repeat the default, so the case
+    /// degenerates there.
     #[test]
     fn the_memory_budget_follows_the_threads_flag() {
         let single = matches_from(&["rimage", "mozjpeg", "image.jpg"]);
         assert_eq!(concurrency_from_env(&single), 1);
 
-        let four = matches_from(&["rimage", "mozjpeg", "--threads", "4", "image.jpg"]);
-        assert_eq!(concurrency_from_env(&four), 4);
+        let requested = crate::cli::utils::threads::num_threads().min(4);
+        let flag = requested.to_string();
+        let many = matches_from(&["rimage", "mozjpeg", "--threads", &flag, "image.jpg"]);
+
+        assert_eq!(concurrency_from_env(&many), requested);
     }
 }
