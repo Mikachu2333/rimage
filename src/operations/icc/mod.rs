@@ -10,6 +10,12 @@ use zune_image::{
 
 /// Apply icc profile
 pub struct ApplyICC {
+    // The Mutex is broader than the single `&profile` borrow `Transform::new`
+    // needs, but lcms2's `Transform<'a>` is lifetime-bound to the profiles
+    // it was built from, so the guard cannot be released while the transform
+    // is alive. In this program each worker constructs its own `ApplySRGB`
+    // instance, so the lock is never contended; it exists only so a shared
+    // instance stays sound across threads.
     profile: Mutex<Profile<GlobalContext>>,
 }
 
