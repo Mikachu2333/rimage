@@ -14,12 +14,12 @@ if [[ $# -lt 1 ]]; then
 fi
 
 prefix=$1
-version=1.5.1
-# The commit 1.5.1 points at, pinned by its own sha: the tag is annotated, so
-# `git rev-parse 1.5.1` would hand back the tag object instead, and comparing
+version=1.5.4
+# The commit 1.5.4 points at, pinned by its own sha: the tag is annotated, so
+# `git rev-parse 1.5.4` would hand back the tag object instead, and comparing
 # that against HEAD can never match. A tag can be re-pointed upstream;
 # verifying the checkout against the commit keeps the build reproducible.
-commit=42b2b24fb8819f1ed3643aa9cf2a62f03868e3aa
+commit=54706fc6bc0cdecab7e9593974a4039cc038fca7
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
