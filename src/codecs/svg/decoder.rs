@@ -73,6 +73,13 @@ pub struct SvgDecoder {
     target: (usize, usize),
 }
 
+/// Upper bound on an SVG/SVGZ document read into memory before parsing.
+///
+/// `Tree::from_data` reads the whole buffer, and a hostile multi-gigabyte
+/// "svg" would exhaust memory before the pixel budget check could run. 256
+/// MiB is far beyond any real SVG; the render target is bounded separately.
+const MAX_SVG_BYTES: u64 = 256 * 1024 * 1024;
+
 /// Parses an SVG document into a `resvg` tree.
 ///
 /// Reads the whole source, configures `resvg` with the SVG's resource
@@ -80,13 +87,20 @@ pub struct SvgDecoder {
 /// document. `Tree::from_data` detects and decompresses gzip (SVGZ)
 /// automatically.
 fn parse_tree<R: Read>(
-    mut source: R,
+    source: R,
     resources_dir: Option<PathBuf>,
 ) -> Result<usvg::Tree, ImageErrors> {
     let mut data = Vec::new();
     source
+        .take(MAX_SVG_BYTES + 1)
         .read_to_end(&mut data)
         .map_err(|e| ImageErrors::ImageDecodeErrors(format!("Unable to read SVG data - {e}")))?;
+    if data.len() as u64 > MAX_SVG_BYTES {
+        return Err(ImageErrors::ImageDecodeErrors(format!(
+            "SVG input exceeds the {} MiB read limit",
+            MAX_SVG_BYTES / 1024 / 1024
+        )));
+    }
 
     let mut usvg_options = usvg::Options {
         resources_dir,
