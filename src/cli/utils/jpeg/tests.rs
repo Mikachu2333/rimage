@@ -59,7 +59,9 @@ fn jpeg(segments: &[Vec<u8>]) -> Vec<u8> {
 fn jfif_density_is_parsed_from_the_app0_segment() {
     let path = scratch("density", &jpeg(&[segment(0xE0, &jfif(1, 300, 300))]));
 
-    let metadata = read_jpeg_source_metadata(&path).unwrap().expect("is a jpeg");
+    let metadata = read_jpeg_source_metadata(&path)
+        .unwrap()
+        .expect("is a jpeg");
 
     assert_eq!(
         metadata.jfif_density,
@@ -77,7 +79,9 @@ fn the_first_exif_segment_is_preserved() {
     let expected = exif(b"first");
     let path = scratch("exif-first", &jpeg(&[segment(0xE1, &expected)]));
 
-    let metadata = read_jpeg_source_metadata(&path).unwrap().expect("is a jpeg");
+    let metadata = read_jpeg_source_metadata(&path)
+        .unwrap()
+        .expect("is a jpeg");
 
     assert_eq!(metadata.exif_app1.as_deref(), Some(expected.as_slice()));
     std::fs::remove_file(path).ok();
@@ -91,13 +95,12 @@ fn a_second_exif_segment_does_not_replace_the_first() {
     let expected = exif(b"first");
     let path = scratch(
         "exif-repeat",
-        &jpeg(&[
-            segment(0xE1, &expected),
-            segment(0xE1, &exif(b"second")),
-        ]),
+        &jpeg(&[segment(0xE1, &expected), segment(0xE1, &exif(b"second"))]),
     );
 
-    let metadata = read_jpeg_source_metadata(&path).unwrap().expect("is a jpeg");
+    let metadata = read_jpeg_source_metadata(&path)
+        .unwrap()
+        .expect("is a jpeg");
 
     assert_eq!(
         metadata.exif_app1.as_deref(),
@@ -117,7 +120,9 @@ fn a_second_jfif_segment_does_not_replace_the_first() {
         ]),
     );
 
-    let metadata = read_jpeg_source_metadata(&path).unwrap().expect("is a jpeg");
+    let metadata = read_jpeg_source_metadata(&path)
+        .unwrap()
+        .expect("is a jpeg");
 
     assert_eq!(
         metadata.jfif_density,
@@ -144,7 +149,9 @@ fn an_app1_that_is_not_exif_does_not_claim_the_exif_slot() {
         ]),
     );
 
-    let metadata = read_jpeg_source_metadata(&path).unwrap().expect("is a jpeg");
+    let metadata = read_jpeg_source_metadata(&path)
+        .unwrap()
+        .expect("is a jpeg");
 
     assert_eq!(metadata.exif_app1.as_deref(), Some(expected.as_slice()));
     std::fs::remove_file(path).ok();
@@ -162,7 +169,9 @@ fn a_file_without_the_jpeg_signature_is_reported_as_none() {
 fn a_jpeg_without_metadata_segments_returns_empty_metadata() {
     let path = scratch("bare", &jpeg(&[]));
 
-    let metadata = read_jpeg_source_metadata(&path).unwrap().expect("is a jpeg");
+    let metadata = read_jpeg_source_metadata(&path)
+        .unwrap()
+        .expect("is a jpeg");
 
     assert!(metadata.jfif_density.is_none());
     assert!(metadata.exif_app1.is_none());

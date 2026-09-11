@@ -302,7 +302,10 @@ fn color_planes_to_rgba(color: &Picture, rgba: &mut [u8]) -> Result<(), ImageErr
         };
         high_depth_ycbcr_to_rgba(
             &view,
-            color.bits_per_component().map(|bits| bits.0.clamp(8, 16)).unwrap_or(8),
+            color
+                .bits_per_component()
+                .map(|bits| bits.0.clamp(8, 16))
+                .unwrap_or(8),
             color.color_range() == Dav1dYuvRange::Full,
             &transform,
             rgba,
@@ -407,7 +410,10 @@ fn identity_planes_to_rgba(color: &Picture, rgba: &mut [u8]) -> Result<(), Image
 
 /// Copies the alpha stream's luma plane into the RGBA alpha channel.
 fn merge_alpha_plane(
-    rgba: &mut [u8], alpha: &Picture, width: usize, height: usize,
+    rgba: &mut [u8],
+    alpha: &Picture,
+    width: usize,
+    height: usize,
 ) -> Result<(), ImageErrors> {
     let plane = &alpha.plane(PlanarImageComponent::Y);
     let stride = alpha.stride(PlanarImageComponent::Y) as usize;
@@ -444,7 +450,10 @@ fn merge_alpha_plane(
 /// not worth a panic in a worker thread, where the release profile's
 /// `panic = "abort"` would take down the whole process.
 fn check_plane(
-    plane: &[u8], stride: usize, height: usize, row_bytes: usize,
+    plane: &[u8],
+    stride: usize,
+    height: usize,
+    row_bytes: usize,
 ) -> Result<(), ImageErrors> {
     let needed = height
         .checked_sub(1)

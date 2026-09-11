@@ -235,9 +235,9 @@ mod tests {
                 [failure, ExitCode::Success, ExitCode::Success],
                 [ExitCode::Success, ExitCode::Success, failure],
             ] {
-                let state = order.iter().fold(RunState::start(), |state, code| {
-                    state.record(*code)
-                });
+                let state = order
+                    .iter()
+                    .fold(RunState::start(), |state, code| state.record(*code));
 
                 assert_eq!(
                     state.exit_code(),

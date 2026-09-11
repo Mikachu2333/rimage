@@ -293,9 +293,11 @@ impl RimageError {
                     }
                 })
             }
-            RimageError::Input(InputError::SizeLimit { dimensions, violation, .. }) => {
-                Some(size_limit_hint(*dimensions, violation, "shrink"))
-            }
+            RimageError::Input(InputError::SizeLimit {
+                dimensions,
+                violation,
+                ..
+            }) => Some(size_limit_hint(*dimensions, violation, "shrink")),
             RimageError::Input(InputError::InvalidResize { requested, .. }) => Some(format!(
                 "choose a --resize value that fits in {}x{} pixels",
                 requested.0, requested.1
@@ -303,13 +305,13 @@ impl RimageError {
             RimageError::Output(OutputError::SizeLimit { violation, .. }) => {
                 Some(size_limit_hint(None, violation, "shrink"))
             }
-            RimageError::Output(OutputError::OutOfSpace { needed, available, .. }) => {
-                Some(format!(
-                    "free at least {} on the destination volume, raise -t to process fewer \
+            RimageError::Output(OutputError::OutOfSpace {
+                needed, available, ..
+            }) => Some(format!(
+                "free at least {} on the destination volume, raise -t to process fewer \
                      images at once, or lower --speed",
-                    human_bytes(needed.saturating_sub(*available))
-                ))
-            }
+                human_bytes(needed.saturating_sub(*available))
+            )),
             RimageError::Output(OutputError::Io { cause, .. }) => match cause.kind() {
                 std::io::ErrorKind::PermissionDenied => {
                     Some("check write permissions on the output directory".to_string())
@@ -386,7 +388,10 @@ impl RimageError {
 /// Convenience for the pre-decode size check, which knows the path, the format
 /// and the dimensions but has no `ImageErrors` to classify.
 pub fn input_size_limit(
-    path: &Path, format: ImageFormatId, dimensions: Option<(u64, u64)>, violation: LimitViolation,
+    path: &Path,
+    format: ImageFormatId,
+    dimensions: Option<(u64, u64)>,
+    violation: LimitViolation,
 ) -> RimageError {
     RimageError::Input(InputError::SizeLimit {
         path: path.to_path_buf(),
@@ -398,7 +403,9 @@ pub fn input_size_limit(
 
 /// Build an "the output cannot be produced" failure from a resolved limit check.
 pub fn output_size_limit(
-    path: &Path, format: ImageFormatId, violation: LimitViolation,
+    path: &Path,
+    format: ImageFormatId,
+    violation: LimitViolation,
 ) -> RimageError {
     RimageError::Output(OutputError::SizeLimit {
         path: path.to_path_buf(),
@@ -425,9 +432,7 @@ pub fn input_open_error(path: &Path, error: &std::io::Error) -> RimageError {
 /// `--colorspace`). The file was read successfully — the failure is in
 /// matching the user's configuration to the encoder's capabilities, which is
 /// why it has its own variant rather than being labelled a decode error.
-pub fn input_config_error(
-    path: &Path, encoder_name: &str, error: &ImageErrors,
-) -> RimageError {
+pub fn input_config_error(path: &Path, encoder_name: &str, error: &ImageErrors) -> RimageError {
     RimageError::Input(InputError::Configuration {
         path: path.to_path_buf(),
         format: ImageFormatId::from_encoder_name(encoder_name),
@@ -513,26 +518,37 @@ pub fn human_count(count: u64) -> String {
 impl Display for RimageError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            RimageError::Input(InputError::Open { path, cause }) => write!(
-                f,
-                "input: cannot open {}: {cause}",
-                path.display()
-            ),
-            RimageError::Input(InputError::Decode { path, format, cause }) => write!(
+            RimageError::Input(InputError::Open { path, cause }) => {
+                write!(f, "input: cannot open {}: {cause}", path.display())
+            }
+            RimageError::Input(InputError::Decode {
+                path,
+                format,
+                cause,
+            }) => write!(
                 f,
                 "input: cannot decode {} as {}: {}",
                 path.display(),
                 format.name(),
                 flatten(cause)
             ),
-            RimageError::Input(InputError::UnsupportedFormat { path, format, reason }) => write!(
+            RimageError::Input(InputError::UnsupportedFormat {
+                path,
+                format,
+                reason,
+            }) => write!(
                 f,
                 "input: {} is a {} file, but {}",
                 path.display(),
                 format.name(),
                 reason.as_str()
             ),
-            RimageError::Input(InputError::SizeLimit { path, format, dimensions, violation }) => {
+            RimageError::Input(InputError::SizeLimit {
+                path,
+                format,
+                dimensions,
+                violation,
+            }) => {
                 write!(
                     f,
                     "input: {} is too large to process as {}: ",
@@ -550,7 +566,11 @@ impl Display for RimageError {
                 "input: cannot resize to {}x{}: {reason}",
                 requested.0, requested.1
             ),
-            RimageError::Input(InputError::Configuration { path, format, cause }) => write!(
+            RimageError::Input(InputError::Configuration {
+                path,
+                format,
+                cause,
+            }) => write!(
                 f,
                 "input: cannot configure {} encoder for {}: {}",
                 format.name(),
@@ -560,14 +580,22 @@ impl Display for RimageError {
             RimageError::Output(OutputError::Io { path, cause }) => {
                 write!(f, "output: cannot write {}: {cause}", path.display())
             }
-            RimageError::Output(OutputError::Encode { path, format, cause }) => write!(
+            RimageError::Output(OutputError::Encode {
+                path,
+                format,
+                cause,
+            }) => write!(
                 f,
                 "output: cannot encode {} as {}: {}",
                 path.display(),
                 format.name(),
                 flatten(cause)
             ),
-            RimageError::Output(OutputError::SizeLimit { path, format, violation }) => {
+            RimageError::Output(OutputError::SizeLimit {
+                path,
+                format,
+                violation,
+            }) => {
                 write!(
                     f,
                     "output: cannot produce {} as {}: ",
@@ -576,7 +604,12 @@ impl Display for RimageError {
                 )?;
                 write_violation(f, violation)
             }
-            RimageError::Output(OutputError::OutOfSpace { path, format, needed, available }) => {
+            RimageError::Output(OutputError::OutOfSpace {
+                path,
+                format,
+                needed,
+                available,
+            }) => {
                 write!(
                     f,
                     "output: not enough space for {} as {}: ",
@@ -604,7 +637,10 @@ fn write_violation(f: &mut Formatter<'_>, violation: &LimitViolation) -> fmt::Re
     };
 
     let (actual, allowed) = if violation.kind == ViolationKind::Bytes {
-        (human_bytes(violation.actual), human_bytes(violation.allowed))
+        (
+            human_bytes(violation.actual),
+            human_bytes(violation.allowed),
+        )
     } else {
         (
             human_count(violation.actual),
@@ -680,20 +716,20 @@ pub fn classify_input(
         .unwrap_or(ImageFormatId::Other);
 
     match error {
-        ImageErrors::ImageDecoderNotImplemented(_) => RimageError::Input(
-            InputError::UnsupportedFormat {
+        ImageErrors::ImageDecoderNotImplemented(_) => {
+            RimageError::Input(InputError::UnsupportedFormat {
                 path: path.to_path_buf(),
                 format,
                 reason: UnsupportedReason::NotImplemented,
-            },
-        ),
-        ImageErrors::ImageDecoderNotIncluded(_) => RimageError::Input(
-            InputError::UnsupportedFormat {
+            })
+        }
+        ImageErrors::ImageDecoderNotIncluded(_) => {
+            RimageError::Input(InputError::UnsupportedFormat {
                 path: path.to_path_buf(),
                 format,
                 reason: UnsupportedReason::FeatureNotEnabled,
-            },
-        ),
+            })
+        }
         // The SVG decoder has no variant for "render target is too large" on the
         // upstream `ImageErrors` enum, so it stamps a structured marker on the
         // decode-error string and `classify_input` rehydrates the structured
@@ -701,33 +737,36 @@ pub fn classify_input(
         // `LimitSet` in `cli::pipeline`, so `Binding::Memory` is the honest label
         // for where the ceiling originated.
         #[cfg(feature = "svg")]
-        ImageErrors::ImageDecodeErrors(message) if format == ImageFormatId::Svg => match parse_size_limit(message) {
-            Some((width, height, actual, allowed)) => RimageError::Input(InputError::SizeLimit {
-                path: path.to_path_buf(),
-                format,
-                dimensions: Some((width, height)),
-                violation: LimitViolation {
-                    kind: ViolationKind::Pixels,
-                    actual,
-                    allowed,
-                    binding: Binding::Memory,
-                },
-            }),
-            None => RimageError::Input(InputError::Decode {
-                path: path.to_path_buf(),
-                format,
-                cause: clone_image_errors(error),
-            }),
-        },
+        ImageErrors::ImageDecodeErrors(message) if format == ImageFormatId::Svg => {
+            match parse_size_limit(message) {
+                Some((width, height, actual, allowed)) => {
+                    RimageError::Input(InputError::SizeLimit {
+                        path: path.to_path_buf(),
+                        format,
+                        dimensions: Some((width, height)),
+                        violation: LimitViolation {
+                            kind: ViolationKind::Pixels,
+                            actual,
+                            allowed,
+                            binding: Binding::Memory,
+                        },
+                    })
+                }
+                None => RimageError::Input(InputError::Decode {
+                    path: path.to_path_buf(),
+                    format,
+                    cause: clone_image_errors(error),
+                }),
+            }
+        }
         ImageErrors::ImageOperationNotImplemented(operation, _) if *operation == "resize" => {
             // Without the caller's context there is nothing to say beyond "the
             // resize failed", so fall through to a decode error rather than
             // dropping the failure's format tag and hint.
             match resize {
-                Some((reason, requested)) => RimageError::Input(InputError::InvalidResize {
-                    requested,
-                    reason,
-                }),
+                Some((reason, requested)) => {
+                    RimageError::Input(InputError::InvalidResize { requested, reason })
+                }
                 None => RimageError::Input(InputError::Decode {
                     path: path.to_path_buf(),
                     format,
@@ -783,9 +822,7 @@ pub fn classify_output(path: &Path, error: &ImageErrors) -> Option<RimageError> 
 /// extension. The path extension and the encoder name usually agree, but
 /// `mozjpeg` writes `.jpg` and `oxipng` writes `.png`, so the encoder name
 /// is the more direct source.
-pub fn output_encode_error(
-    path: &Path, encoder_name: &str, error: &ImageErrors,
-) -> RimageError {
+pub fn output_encode_error(path: &Path, encoder_name: &str, error: &ImageErrors) -> RimageError {
     RimageError::Output(OutputError::Encode {
         path: path.to_path_buf(),
         format: ImageFormatId::from_encoder_name(encoder_name),
@@ -799,9 +836,7 @@ pub fn output_encode_error(
 /// temp-file allocation, file publishing, metadata writing), so they are
 /// reported with the same structured form as encoder failures. The path is the
 /// file that was being written when the IO failed.
-pub fn output_io_error(
-    path: &Path, error: &std::io::Error,
-) -> RimageError {
+pub fn output_io_error(path: &Path, error: &std::io::Error) -> RimageError {
     RimageError::Output(OutputError::Io {
         path: path.to_path_buf(),
         cause: std::io::Error::new(error.kind(), error.to_string()),
@@ -819,19 +854,30 @@ fn clone_input(error: &InputError) -> InputError {
             path: path.clone(),
             cause: std::io::Error::new(cause.kind(), cause.to_string()),
         },
-        InputError::Decode { path, format, cause } => InputError::Decode {
+        InputError::Decode {
+            path,
+            format,
+            cause,
+        } => InputError::Decode {
             path: path.clone(),
             format: *format,
             cause: clone_image_errors(cause),
         },
-        InputError::UnsupportedFormat { path, format, reason } => {
-            InputError::UnsupportedFormat {
-                path: path.clone(),
-                format: *format,
-                reason: *reason,
-            }
-        }
-        InputError::SizeLimit { path, format, dimensions, violation } => InputError::SizeLimit {
+        InputError::UnsupportedFormat {
+            path,
+            format,
+            reason,
+        } => InputError::UnsupportedFormat {
+            path: path.clone(),
+            format: *format,
+            reason: *reason,
+        },
+        InputError::SizeLimit {
+            path,
+            format,
+            dimensions,
+            violation,
+        } => InputError::SizeLimit {
             path: path.clone(),
             format: *format,
             dimensions: *dimensions,
@@ -841,7 +887,11 @@ fn clone_input(error: &InputError) -> InputError {
             requested: *requested,
             reason,
         },
-        InputError::Configuration { path, format, cause } => InputError::Configuration {
+        InputError::Configuration {
+            path,
+            format,
+            cause,
+        } => InputError::Configuration {
             path: path.clone(),
             format: *format,
             cause: clone_image_errors(cause),
@@ -856,17 +906,30 @@ fn clone_output(error: &OutputError) -> OutputError {
             path: path.clone(),
             cause: std::io::Error::new(cause.kind(), cause.to_string()),
         },
-        OutputError::Encode { path, format, cause } => OutputError::Encode {
+        OutputError::Encode {
+            path,
+            format,
+            cause,
+        } => OutputError::Encode {
             path: path.clone(),
             format: *format,
             cause: clone_image_errors(cause),
         },
-        OutputError::SizeLimit { path, format, violation } => OutputError::SizeLimit {
+        OutputError::SizeLimit {
+            path,
+            format,
+            violation,
+        } => OutputError::SizeLimit {
             path: path.clone(),
             format: *format,
             violation: *violation,
         },
-        OutputError::OutOfSpace { path, format, needed, available } => OutputError::OutOfSpace {
+        OutputError::OutOfSpace {
+            path,
+            format,
+            needed,
+            available,
+        } => OutputError::OutOfSpace {
             path: path.clone(),
             format: *format,
             needed: *needed,

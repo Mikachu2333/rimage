@@ -278,12 +278,7 @@ pub fn parse_size_limit(message: &str) -> Option<(u64, u64, u64, u64)> {
     let allowed = fields.next()?.parse().ok()?;
 
     let (width, height) = dimensions.split_once('x')?;
-    Some((
-        width.parse().ok()?,
-        height.parse().ok()?,
-        actual,
-        allowed,
-    ))
+    Some((width.parse().ok()?, height.parse().ok()?, actual, allowed))
 }
 
 impl DecoderTrait for SvgDecoder {

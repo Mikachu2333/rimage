@@ -4,4 +4,4 @@ pub mod decoder;
 
 pub(crate) mod fonts;
 
-pub use decoder::{parse_size_limit, SvgDecoder, SvgOptions, SIZE_LIMIT_MARKER};
+pub use decoder::{SIZE_LIMIT_MARKER, SvgDecoder, SvgOptions, parse_size_limit};

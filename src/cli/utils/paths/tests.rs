@@ -270,10 +270,7 @@ fn file_list_keeps_trailing_backslashes() {
     fs::write(&list, "dir\\\ndir/\n").unwrap();
 
     let entries = read_file_list_entries(&list).unwrap();
-    assert_eq!(
-        entries,
-        vec![PathBuf::from("dir\\"), PathBuf::from("dir")]
-    );
+    assert_eq!(entries, vec![PathBuf::from("dir\\"), PathBuf::from("dir")]);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -356,7 +353,13 @@ fn windows_output_names_cannot_end_in_a_dot_or_space() {
             "{bad:?} must be rejected"
         );
     }
-    for ok in ["out.jpg", "out .jpg", "out..jpg", "concepts.png", "logo.png"] {
+    for ok in [
+        "out.jpg",
+        "out .jpg",
+        "out..jpg",
+        "concepts.png",
+        "logo.png",
+    ] {
         assert!(
             validate_output_file_name(OsStr::new(ok)).is_ok(),
             "{ok:?} must be accepted"

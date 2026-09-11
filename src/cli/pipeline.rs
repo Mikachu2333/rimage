@@ -70,9 +70,7 @@ fn decode_options() -> DecoderOptions {
 /// violation is resolved here and would otherwise have to be re-parsed out of a
 /// string to be reported.
 #[cfg(feature = "limits")]
-fn check_input_limits(
-    path: &Path, matches: &ArgMatches,
-) -> Result<(), rimage::error::RimageError> {
+fn check_input_limits(path: &Path, matches: &ArgMatches) -> Result<(), rimage::error::RimageError> {
     use rimage::limits::{ImageFormatId, LimitSet, PipelineCost, SystemBudget};
 
     let extension = path
@@ -102,11 +100,9 @@ fn check_input_limits(
         PipelineCost::for_encoder(format),
     );
 
-    limits
-        .check(width, height)
-        .map_err(|violation| {
-            rimage::error::input_size_limit(path, format, Some((width, height)), violation)
-        })
+    limits.check(width, height).map_err(|violation| {
+        rimage::error::input_size_limit(path, format, Some((width, height)), violation)
+    })
 }
 
 /// Read just the dimensions from an image header.
@@ -122,7 +118,8 @@ fn check_input_limits(
 /// compressed image data and report the wrong size.
 #[cfg(feature = "limits")]
 fn probe_dimensions<R: std::io::Read>(
-    mut reader: R, format: rimage::limits::ImageFormatId,
+    mut reader: R,
+    format: rimage::limits::ImageFormatId,
 ) -> Option<(u64, u64)> {
     use rimage::limits::ImageFormatId;
 
@@ -272,7 +269,11 @@ fn png_dimensions(data: &[u8]) -> Option<(u64, u64)> {
     }
 
     let width = u32::from_be_bytes(data.get(IHDR_PAYLOAD..IHDR_PAYLOAD + 4)?.try_into().ok()?);
-    let height = u32::from_be_bytes(data.get(IHDR_PAYLOAD + 4..IHDR_PAYLOAD + 8)?.try_into().ok()?);
+    let height = u32::from_be_bytes(
+        data.get(IHDR_PAYLOAD + 4..IHDR_PAYLOAD + 8)?
+            .try_into()
+            .ok()?,
+    );
 
     if width == 0 || height == 0 {
         return None;
@@ -312,7 +313,12 @@ fn avif_dimensions(data: &[u8]) -> Option<(u64, u64)> {
 
     /// Walk the boxes in `data[range]` looking for one with type `wanted`,
     /// returning the range of its *payload*.
-    fn find_box(data: &[u8], mut start: usize, end: usize, wanted: &[u8; 4]) -> Option<(usize, usize)> {
+    fn find_box(
+        data: &[u8],
+        mut start: usize,
+        end: usize,
+        wanted: &[u8; 4],
+    ) -> Option<(usize, usize)> {
         while start + BOX_HEADER <= end {
             let size = read_u32(data, start)?;
 
@@ -464,7 +470,6 @@ fn tiff_dimensions(data: &[u8]) -> Option<(u64, u64)> {
     }
 }
 
-
 /// Read up to `limit` bytes from the front of `reader`.
 ///
 /// Returns `None` when nothing could be read. A short read is not an error: a
@@ -527,7 +532,10 @@ fn concurrency_from_env(matches: &ArgMatches) -> usize {
 
 #[allow(unused_variables)]
 #[allow(unused_mut)]
-pub fn decode<P: AsRef<Path>>(f: P, matches: &ArgMatches) -> Result<Image, rimage::error::RimageError> {
+pub fn decode<P: AsRef<Path>>(
+    f: P,
+    matches: &ArgMatches,
+) -> Result<Image, rimage::error::RimageError> {
     // The size pre-check already knows which ceiling it broke, so it produces
     // the structured error directly instead of round-tripping through a string.
     #[cfg(feature = "limits")]
@@ -576,7 +584,9 @@ fn svg_pixel_budget(matches: &ArgMatches) -> Option<u64> {
 /// conversion to [`rimage::error::RimageError`] happens in exactly one place.
 #[allow(unused_variables)]
 fn decode_with_fallback(
-    path: &Path, matches: &ArgMatches, e: ImageErrors,
+    path: &Path,
+    matches: &ArgMatches,
+    e: ImageErrors,
 ) -> Result<Image, ImageErrors> {
     {
         if matches!(e, ImageErrors::ImageDecoderNotImplemented(_)) {
@@ -593,10 +603,12 @@ fn decode_with_fallback(
                     let pixel_budget = svg_pixel_budget(matches);
 
                     #[cfg(feature = "resize")]
-                    let decoder =
-                        SvgDecoder::try_new_with_resize_and_budget(file, resources_dir, pixel_budget, |size| {
-                            svg_target_size(matches, size)
-                        })?;
+                    let decoder = SvgDecoder::try_new_with_resize_and_budget(
+                        file,
+                        resources_dir,
+                        pixel_budget,
+                        |size| svg_target_size(matches, size),
+                    )?;
 
                     #[cfg(not(feature = "resize"))]
                     let decoder = SvgDecoder::try_new_with_options(
@@ -682,7 +694,9 @@ fn decode_with_fallback(
 /// function honest instead of inventing a reason it did not observe; the
 /// classification still reports it as an input failure on the right format.
 fn classify_decode_failure(
-    path: &Path, _matches: &ArgMatches, error: &ImageErrors,
+    path: &Path,
+    _matches: &ArgMatches,
+    error: &ImageErrors,
 ) -> rimage::error::RimageError {
     rimage::error::classify_input(path, error, None)
 }
@@ -1537,7 +1551,12 @@ mod tests {
             .map(|(idx, _)| *idx)
             .collect();
 
-        let expected: Vec<usize> = matches.indices_of("resize").into_iter().flatten().skip(1).collect();
+        let expected: Vec<usize> = matches
+            .indices_of("resize")
+            .into_iter()
+            .flatten()
+            .skip(1)
+            .collect();
         assert_eq!(resize_indices, expected);
     }
 
@@ -1778,9 +1797,7 @@ mod limit_tests {
     ///
     /// `value_type` is the TIFF type code, so the same builder covers both the
     /// `SHORT` and `LONG` encodings the specification allows here.
-    fn tiff_with_dimensions(
-        order: &[u8; 2], value_type: u16, width: u32, height: u32,
-    ) -> Vec<u8> {
+    fn tiff_with_dimensions(order: &[u8; 2], value_type: u16, width: u32, height: u32) -> Vec<u8> {
         let big = order == b"MM";
         let mut file = Vec::new();
         file.extend_from_slice(order);
@@ -1886,9 +1903,7 @@ mod limit_tests {
     fn a_missing_file_is_not_a_size_error() {
         let matches = matches_from(&["rimage", "mozjpeg", "tests/files/does-not-exist.jpg"]);
 
-        assert!(
-            check_input_limits(Path::new("tests/files/does-not-exist.jpg"), &matches).is_ok()
-        );
+        assert!(check_input_limits(Path::new("tests/files/does-not-exist.jpg"), &matches).is_ok());
     }
 
     /// The budget must divide by the concurrency the pipeline really uses.

@@ -131,7 +131,10 @@ fn record_failure(state: &Arc<Mutex<ProcessingState>>, side: rimage::exit::ExitC
 /// Used for the pipeline's own [`RimageError`](rimage::error::RimageError)
 /// values, which know their side and would otherwise have to be taken apart and
 /// reassembled to be logged.
-fn record_structured_failure(state: &Arc<Mutex<ProcessingState>>, error: &rimage::error::RimageError) {
+fn record_structured_failure(
+    state: &Arc<Mutex<ProcessingState>>,
+    error: &rimage::error::RimageError,
+) {
     let side = match error.direction() {
         rimage::error::Direction::Input => rimage::exit::ExitCode::Input,
         rimage::error::Direction::Output => rimage::exit::ExitCode::Output,
@@ -349,7 +352,9 @@ fn size_ratio(output_size: u64, input_size: u64) -> f64 {
 /// encoding of them.
 #[cfg(feature = "limits")]
 fn check_output_limits(
-    output: &Path, img: &Image, encoder_name: &str,
+    output: &Path,
+    img: &Image,
+    encoder_name: &str,
 ) -> std::result::Result<(), rimage::error::RimageError> {
     use rimage::limits::{ImageFormatId, LimitSet, PipelineCost, SystemBudget, bytes_per_pixel};
 
@@ -524,10 +529,7 @@ fn colorspace_to_string(colorspace: &ColorSpace) -> String {
 #[cfg(feature = "limits")]
 fn print_limits(subcommand: &str, threads: usize) -> std::process::ExitCode {
     use rimage::error::human_bytes;
-    use rimage::limits::{
-        ImageFormatId, LimitSet, PipelineCost, SystemBudget,
-        bytes_per_pixel,
-    };
+    use rimage::limits::{ImageFormatId, LimitSet, PipelineCost, SystemBudget, bytes_per_pixel};
 
     let format = ImageFormatId::from_encoder_name(subcommand);
     let budget = SystemBudget::probe(threads);
@@ -543,10 +545,23 @@ fn print_limits(subcommand: &str, threads: usize) -> std::process::ExitCode {
     println!("Concurrency: {threads} image(s) at once");
     println!();
     println!("System budget");
-    println!("  Available memory:    {}", human_bytes(budget.available_memory));
+    println!(
+        "  Available memory:    {}",
+        human_bytes(budget.available_memory)
+    );
     println!("  Address space cap:   {}", human_bytes(budget.address_cap));
-    println!("  Probe status:        {}", if budget.is_probed() { "ok" } else { "fallback (512 MiB)" });
-    println!("  Per-image bytes:     {}", human_bytes(budget.per_image_bytes()));
+    println!(
+        "  Probe status:        {}",
+        if budget.is_probed() {
+            "ok"
+        } else {
+            "fallback (512 MiB)"
+        }
+    );
+    println!(
+        "  Per-image bytes:     {}",
+        human_bytes(budget.per_image_bytes())
+    );
     println!();
 
     let caps = rimage::limits::format_caps(format);
@@ -565,17 +580,23 @@ fn print_limits(subcommand: &str, threads: usize) -> std::process::ExitCode {
     println!("  Resize:   {}×", cost.resize);
     println!("  Quantize: {}×", cost.quantize);
     println!("  Encode:   {}×", cost.encode);
-    println!("  Total:    {}× (× {} B/px = {} B/px)",
-        cost.total(), bpp, cost.total() * bpp);
+    println!(
+        "  Total:    {}× (× {} B/px = {} B/px)",
+        cost.total(),
+        bpp,
+        cost.total() * bpp
+    );
     println!();
 
     let limits = LimitSet::for_input(format, depth, colorspace, &budget, cost);
     println!("Effective input limits");
     println!("  Max width:   {}", limits.max_width);
     println!("  Max height:  {}", limits.max_height);
-    println!("  Max pixels:  {} (≈ {}²)",
+    println!(
+        "  Max pixels:  {} (≈ {}²)",
         limits.max_pixels,
-        (limits.max_pixels as f64).sqrt() as u64);
+        (limits.max_pixels as f64).sqrt() as u64
+    );
     println!("  Max bytes:   {}", human_bytes(limits.max_bytes));
     println!("  Binding:     {}", binding_str(limits.binding));
     println!("  Byte binding: {}", binding_str(limits.bytes_binding));
@@ -1471,9 +1492,7 @@ fn main() -> std::process::ExitCode {
 /// failure: the run produced everything the user asked for except the summary,
 /// which is a partial result. It is folded in as an output failure so the
 /// reported code reflects that most of the work succeeded.
-fn report_metadata_failure(
-    run: rimage::exit::RunState,
-) -> std::process::ExitCode {
+fn report_metadata_failure(run: rimage::exit::RunState) -> std::process::ExitCode {
     std::process::ExitCode::from(
         run.record(rimage::exit::ExitCode::Output)
             .exit_code()

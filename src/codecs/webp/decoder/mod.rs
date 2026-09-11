@@ -40,7 +40,8 @@ impl<R: Read> WebPDecoder<R> {
 
     /// Create a new webp decoder with explicit [`DecoderOptions`].
     pub fn try_new_with_options(
-        source: R, _options: DecoderOptions
+        source: R,
+        _options: DecoderOptions,
     ) -> Result<WebPDecoder<R>, ImageErrors> {
         let mut buf = Vec::new();
         source.take(MAX_WEBP_BYTES + 1).read_to_end(&mut buf)?;
@@ -97,10 +98,9 @@ where
             ));
         }
 
-        let animated = self
-            .animated
-            .take()
-            .ok_or_else(|| ImageErrors::ImageDecodeErrors("WebP image has no frames".to_string()))?;
+        let animated = self.animated.take().ok_or_else(|| {
+            ImageErrors::ImageDecodeErrors("WebP image has no frames".to_string())
+        })?;
 
         // Only the first frame is needed, so the remaining frames are not
         // walked: `get_frame` gives one without collecting the rest.

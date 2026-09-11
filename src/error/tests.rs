@@ -21,9 +21,7 @@ fn limit_violation() -> LimitViolation {
 
 #[test]
 fn decoder_not_implemented_becomes_an_unsupported_format_input_error() {
-    let error = ImageErrors::ImageDecoderNotImplemented(
-        zune_image::codecs::ImageFormat::Unknown,
-    );
+    let error = ImageErrors::ImageDecoderNotImplemented(zune_image::codecs::ImageFormat::Unknown);
 
     let classified = classify_input(&jpeg_path(), &error, None);
 
@@ -259,7 +257,11 @@ fn a_size_limit_violation_explains_which_ceiling_bound() {
 
 #[test]
 fn every_violation_kind_is_described() {
-    for kind in [ViolationKind::Width, ViolationKind::Height, ViolationKind::Pixels] {
+    for kind in [
+        ViolationKind::Width,
+        ViolationKind::Height,
+        ViolationKind::Pixels,
+    ] {
         let error = RimageError::Input(InputError::SizeLimit {
             path: PathBuf::from("x.png"),
             format: ImageFormatId::Png,
@@ -272,7 +274,10 @@ fn every_violation_kind_is_described() {
             },
         });
 
-        assert!(!error.to_string().is_empty(), "{kind:?} produced no message");
+        assert!(
+            !error.to_string().is_empty(),
+            "{kind:?} produced no message"
+        );
         assert!(error.hint().is_some(), "{kind:?} produced no hint");
     }
 }
@@ -409,7 +414,10 @@ fn display_matches_what_displaying_the_inner_variants_produces() {
         cause: decode_failure(),
     };
 
-    assert_eq!(error.to_string(), RimageError::Input(clone_input(&error)).to_string());
+    assert_eq!(
+        error.to_string(),
+        RimageError::Input(clone_input(&error)).to_string()
+    );
 }
 
 #[test]
@@ -482,7 +490,9 @@ fn every_error_renders_its_hint_on_a_following_line() {
         limit_violation(),
     );
 
-    let hint = error.hint().expect("a size violation always suggests a fix");
+    let hint = error
+        .hint()
+        .expect("a size violation always suggests a fix");
     assert!(
         hint.contains("shrink"),
         "hint should name the action: {hint}"
@@ -521,9 +531,7 @@ fn input_open_error_classifies_io_failures_on_the_input_side() {
 
 #[test]
 fn input_config_error_tags_the_format_from_the_encoder_name() {
-    let cause = ImageErrors::GenericString(
-        "Unsupported mozjpeg colorspace: neon".to_string(),
-    );
+    let cause = ImageErrors::GenericString("Unsupported mozjpeg colorspace: neon".to_string());
 
     let error = input_config_error(&jpeg_path(), "mozjpeg", &cause);
 

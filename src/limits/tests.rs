@@ -22,9 +22,7 @@ fn budget_with_cap(memory: u64, concurrency: usize, address_cap: u64) -> SystemB
 /// Build a `LimitSet` for the `check` tests, whose subject is the pixel
 /// ceilings. The byte ceiling is left unbounded so it cannot accidentally
 /// become the thing under test.
-fn pixel_limits(
-    max_width: u64, max_height: u64, max_pixels: u64, binding: Binding,
-) -> LimitSet {
+fn pixel_limits(max_width: u64, max_height: u64, max_pixels: u64, binding: Binding) -> LimitSet {
     LimitSet {
         max_width,
         max_height,
@@ -68,7 +66,11 @@ fn avif_cap_matches_spec() {
 
 #[test]
 fn formats_without_published_limits_are_unbounded() {
-    for format in [ImageFormatId::Tiff, ImageFormatId::Svg, ImageFormatId::Other] {
+    for format in [
+        ImageFormatId::Tiff,
+        ImageFormatId::Svg,
+        ImageFormatId::Other,
+    ] {
         let caps = format_caps(format);
         assert_eq!(
             caps.max_side,
@@ -385,14 +387,35 @@ fn encoder_names_map_to_the_format_they_write() {
     // The CLI subcommand is not the file extension: `mozjpeg` writes a `.jpg`
     // and `oxipng` writes a `.png`. Looking output limits up by subcommand is
     // what makes them describe the file that actually lands on disk.
-    assert_eq!(ImageFormatId::from_encoder_name("mozjpeg"), ImageFormatId::Jpeg);
-    assert_eq!(ImageFormatId::from_encoder_name("jpeg"), ImageFormatId::Jpeg);
-    assert_eq!(ImageFormatId::from_encoder_name("oxipng"), ImageFormatId::Png);
+    assert_eq!(
+        ImageFormatId::from_encoder_name("mozjpeg"),
+        ImageFormatId::Jpeg
+    );
+    assert_eq!(
+        ImageFormatId::from_encoder_name("jpeg"),
+        ImageFormatId::Jpeg
+    );
+    assert_eq!(
+        ImageFormatId::from_encoder_name("oxipng"),
+        ImageFormatId::Png
+    );
     assert_eq!(ImageFormatId::from_encoder_name("png"), ImageFormatId::Png);
-    assert_eq!(ImageFormatId::from_encoder_name("webp"), ImageFormatId::WebP);
-    assert_eq!(ImageFormatId::from_encoder_name("avif"), ImageFormatId::Avif);
-    assert_eq!(ImageFormatId::from_encoder_name("tiff"), ImageFormatId::Tiff);
-    assert_eq!(ImageFormatId::from_encoder_name("qoi"), ImageFormatId::Other);
+    assert_eq!(
+        ImageFormatId::from_encoder_name("webp"),
+        ImageFormatId::WebP
+    );
+    assert_eq!(
+        ImageFormatId::from_encoder_name("avif"),
+        ImageFormatId::Avif
+    );
+    assert_eq!(
+        ImageFormatId::from_encoder_name("tiff"),
+        ImageFormatId::Tiff
+    );
+    assert_eq!(
+        ImageFormatId::from_encoder_name("qoi"),
+        ImageFormatId::Other
+    );
 }
 
 #[test]
