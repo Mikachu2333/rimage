@@ -56,6 +56,14 @@ impl EncoderTrait for WebPEncoder {
     ) -> Result<usize, ImageErrors> {
         let (width, height) = image.dimensions();
 
+        // WebP's API takes u32 dimensions; `width as u32` would silently
+        // truncate a >4 Gpx image and hand libwebp wrong dimensions with the
+        // full buffer. Reject it instead.
+        let (width_u32, height_u32) = (
+            u32::try_from(width).map_err(|_| dimension_overflow(width, height))?,
+            u32::try_from(height).map_err(|_| dimension_overflow(width, height))?,
+        );
+
         let mut writer = ZWriter::new(sink);
 
         if image.is_animated() {
@@ -72,8 +80,8 @@ impl EncoderTrait for WebPEncoder {
         })?;
 
         let encoder = match image.colorspace() {
-            ColorSpace::RGB => webp::Encoder::from_rgb(data, width as u32, height as u32),
-            ColorSpace::RGBA => webp::Encoder::from_rgba(data, width as u32, height as u32),
+            ColorSpace::RGB => webp::Encoder::from_rgb(data, width_u32, height_u32),
+            ColorSpace::RGBA => webp::Encoder::from_rgba(data, width_u32, height_u32),
             cs => {
                 return Err(ImageErrors::EncodeErrors(
                     ImgEncodeErrors::UnsupportedColorspace(cs, self.supported_colorspaces()),
@@ -114,6 +122,13 @@ impl EncoderTrait for WebPEncoder {
     fn default_depth(&self, _depth: BitDepth) -> BitDepth {
         BitDepth::Eight
     }
+}
+
+/// Build the encode error for a dimension that does not fit in WebP's u32.
+fn dimension_overflow(width: usize, height: usize) -> ImageErrors {
+    ImageErrors::EncodeErrors(ImgEncodeErrors::ImageEncodeErrors(format!(
+        "image dimensions {width}x{height} exceed the WebP u32 limit"
+    )))
 }
 
 #[cfg(test)]
