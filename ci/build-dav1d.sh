@@ -15,9 +15,11 @@ fi
 
 prefix=$1
 version=1.5.1
-# Commit the 1.5.1 tag pointed at when this pin was written. A tag can be
-# re-pointed upstream; verifying the checkout keeps the build reproducible.
-commit=3060ebf8dd26952579373084984daf70a54f5368
+# The commit 1.5.1 points at, pinned by its own sha: the tag is annotated, so
+# `git rev-parse 1.5.1` would hand back the tag object instead, and comparing
+# that against HEAD can never match. A tag can be re-pointed upstream;
+# verifying the checkout against the commit keeps the build reproducible.
+commit=42b2b24fb8819f1ed3643aa9cf2a62f03868e3aa
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
