@@ -1,9 +1,20 @@
 use super::*;
 
+/// A budget whose address cap cannot become the thing under test.
+///
+/// [`ADDRESS_SPACE_CAP`] is 768 MiB on a 32-bit target, small enough to bind
+/// ahead of the pixel and memory ceilings every caller here is actually about.
+/// Passing `u64::MAX` keeps those subjects separate;
+/// [`address_cap_binds_a_32_bit_process`] covers the real value on the targets
+/// where it is not the maximum.
 fn budget_with(memory: u64, concurrency: usize) -> SystemBudget {
+    budget_with_cap(memory, concurrency, u64::MAX)
+}
+
+fn budget_with_cap(memory: u64, concurrency: usize, address_cap: u64) -> SystemBudget {
     SystemBudget {
         available_memory: memory,
-        address_cap: ADDRESS_SPACE_CAP,
+        address_cap,
         concurrency,
     }
 }
@@ -81,6 +92,19 @@ fn budget_is_halved_and_divided_by_concurrency() {
     let budget = budget_with(8 * 1024 * 1024 * 1024, 4);
     // Half of 8 GiB is 4 GiB, split across 4 concurrent images.
     assert_eq!(budget.per_image_bytes(), 1024 * 1024 * 1024);
+}
+
+/// Plenty of free memory does not mean one large allocation is obtainable: a
+/// 32-bit process needs a single contiguous range, and fragmentation is what
+/// turns that into a failed allocation rather than a real OOM. The cap has to
+/// bind before the halved budget does.
+#[cfg(target_pointer_width = "32")]
+#[test]
+fn address_cap_binds_a_32_bit_process() {
+    // 4 GiB usable after the safety halving, well above the cap.
+    let budget = budget_with_cap(8 * 1024 * 1024 * 1024, 1, ADDRESS_SPACE_CAP);
+
+    assert_eq!(budget.per_image_bytes(), ADDRESS_SPACE_CAP);
 }
 
 #[test]
