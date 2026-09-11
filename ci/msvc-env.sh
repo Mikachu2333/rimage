@@ -20,13 +20,15 @@ _sdk_root='/c/Program Files (x86)/Windows Kits/10'
 # --- Target architecture ---------------------------------------------------
 # x64 is the default because Git Bash itself is x64-only (on ARM64 Windows it
 # runs emulated, and the x64 toolchain is what it can execute). Override for
-# an ARM64-native environment (e.g. MSYS2 clangarm64): RIMAGE_ARCH=arm64.
+# an ARM64-native environment (e.g. MSYS2 clangarm64): RIMAGE_ARCH=arm64, or
+# for a 32-bit target: RIMAGE_ARCH=x86.
 _arch="${RIMAGE_ARCH:-x64}"
 case "$_arch" in
     x64)   _host_dir="Hostx64" ;;
+    x86)   _host_dir="Hostx64" ;;
     arm64) _host_dir="Hostarm64" ;;
     *)
-        echo "msvc-env: unsupported RIMAGE_ARCH '$_arch' (expected x64 or arm64)" >&2
+        echo "msvc-env: unsupported RIMAGE_ARCH '$_arch' (expected x64, x86 or arm64)" >&2
         return 1 2>/dev/null || exit 1
         ;;
 esac
