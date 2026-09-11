@@ -810,10 +810,14 @@ fn pretty_path(path: &Path) -> PathBuf {
 }
 
 fn main() -> std::process::ExitCode {
-    let logger = pretty_env_logger::formatted_builder()
+    // env_logger (maintained) replaces pretty_env_logger, which is
+    // unmaintained. The timestamp is dropped to match the old compact style;
+    // colored levels stay on when stderr is a terminal.
+    let logger = env_logger::Builder::new()
         .filter_level(log::LevelFilter::Warn)
         .parse_default_env()
         .filter_module("little_exif", log::LevelFilter::Off)
+        .format_timestamp(None)
         .build();
     let level = logger.filter();
 

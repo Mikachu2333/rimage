@@ -53,7 +53,7 @@ build-binary = [
     "dep:clap",
     "dep:indoc",
     "dep:rayon",
-    "dep:pretty_env_logger",
+    "dep:env_logger",
     "dep:zune-imageprocs",
     "dep:glob",
     "zune-image/default",
@@ -146,7 +146,7 @@ sysinfo = { version = "0.39.6", optional = true }
 anyhow = { version = "1.0", optional = true }
 clap = { version = "4.6", features = ["cargo", "string"], optional = true }
 indoc = { version = "2.0", optional = true }
-pretty_env_logger = { version = "0.5.0", optional = true }
+env_logger = { version = "0.11", optional = true, default-features = false, features = ["auto-color"] }
 rayon = { version = "1.12.0", optional = true }
 zune-imageprocs = { version = "0.5.1", features = [
     "exif",
