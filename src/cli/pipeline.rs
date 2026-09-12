@@ -8,8 +8,6 @@ use std::io::Read;
 #[cfg(feature = "resize")]
 use crate::cli::preprocessors::ResizeValue;
 use crate::cli::utils::jpeg::JfifDensity;
-#[cfg(feature = "limits")]
-use crate::cli::utils::threads;
 use clap::ArgMatches;
 #[cfg(feature = "avif")]
 use rimage::codecs::avif::AvifEncoder;
@@ -84,6 +82,7 @@ fn check_input_limits(
     path: &Path,
     matches: &ArgMatches,
     output: rimage::limits::ImageFormatId,
+    concurrency: usize,
 ) -> Result<(), rimage::error::RimageError> {
     use rimage::limits::{ImageFormatId, LimitSet, PipelineCost, SystemBudget};
 
@@ -106,7 +105,7 @@ fn check_input_limits(
     };
 
     let (depth, colorspace) = format.max_pixel_layout();
-    let budget = SystemBudget::probe(concurrency_from_env(matches));
+    let budget = SystemBudget::probe(concurrency);
     let limits = LimitSet::for_input(
         format,
         depth,
@@ -526,23 +525,12 @@ const JPEG_HEADER_PROBE_BYTES: usize = 64 * 1024;
 #[cfg(all(feature = "limits", feature = "webp"))]
 const WEBP_HEADER_PROBE_BYTES: usize = 64 * 1024;
 
-/// The concurrency the pipeline will actually use for `matches`.
-///
-/// Read from the same `-t/--threads` argument `main` sizes its worker pool
-/// from, so the memory budget divides by the number of images that will really
-/// be in flight. Defaults to 1, matching the flag's own default.
-///
-/// This is deliberately not read from the environment: a second, silently
-/// different source of truth for the same number is how a budget ends up sized
-/// for one image while four are being decoded.
-///
-/// It is also the value that decides whether an image is "too large" at all —
-/// the ceiling moves as this number does — which is why it has to agree with
-/// the pool rather than merely be close to it.
-#[cfg(feature = "limits")]
-fn concurrency_from_env(matches: &ArgMatches) -> usize {
-    threads::clamp(threads::requested(matches))
-}
+/// The size screen below takes the concurrency as a parameter rather than
+/// deriving it: `main` is the only place that knows both the `--threads`
+/// request and how many inputs there are, and the per-image ceiling is the
+/// memory divided by the smaller of the two. Re-deriving it here would be a
+/// second, silently different source of truth for the number that decides
+/// whether an image is "too large".
 
 #[allow(unused_variables)]
 #[allow(unused_mut)]
@@ -550,14 +538,15 @@ pub fn decode<P: AsRef<Path>>(
     f: P,
     matches: &ArgMatches,
     output: rimage::limits::ImageFormatId,
+    concurrency: usize,
 ) -> Result<Image, rimage::error::RimageError> {
     // The size pre-check already knows which ceiling it broke, so it produces
     // the structured error directly instead of round-tripping through a string.
     #[cfg(feature = "limits")]
-    check_input_limits(f.as_ref(), matches, output)?;
+    check_input_limits(f.as_ref(), matches, output, concurrency)?;
 
     Image::open_with_options(f.as_ref(), decode_options())
-        .or_else(|e| decode_with_fallback(f.as_ref(), matches, output, e))
+        .or_else(|e| decode_with_fallback(f.as_ref(), matches, output, concurrency, e))
         .map_err(|e| classify_decode_failure(f.as_ref(), matches, &e))
 }
 
@@ -569,13 +558,17 @@ pub fn decode<P: AsRef<Path>>(
 /// Returns `None` when the `limits` feature is off, which makes the decoder
 /// fall back to its own constant.
 #[cfg(feature = "svg")]
-fn svg_pixel_budget(matches: &ArgMatches, output: rimage::limits::ImageFormatId) -> Option<u64> {
+fn svg_pixel_budget(
+    matches: &ArgMatches,
+    output: rimage::limits::ImageFormatId,
+    concurrency: usize,
+) -> Option<u64> {
     #[cfg(feature = "limits")]
     {
         use rimage::limits::{ImageFormatId, LimitSet, PipelineCost, SystemBudget};
 
         let (depth, colorspace) = ImageFormatId::Svg.max_pixel_layout();
-        let budget = SystemBudget::probe(concurrency_from_env(matches));
+        let budget = SystemBudget::probe(concurrency);
         let limits = LimitSet::for_input(
             ImageFormatId::Svg,
             depth,
@@ -591,7 +584,7 @@ fn svg_pixel_budget(matches: &ArgMatches, output: rimage::limits::ImageFormatId)
 
     #[cfg(not(feature = "limits"))]
     {
-        let _ = (matches, output);
+        let _ = (matches, output, concurrency);
         None
     }
 }
@@ -605,6 +598,7 @@ fn decode_with_fallback(
     path: &Path,
     matches: &ArgMatches,
     output: rimage::limits::ImageFormatId,
+    concurrency: usize,
     e: ImageErrors,
 ) -> Result<Image, ImageErrors> {
     {
@@ -619,7 +613,7 @@ fn decode_with_fallback(
                     .is_some_and(|f| f.eq_ignore_ascii_case("svg") | f.eq_ignore_ascii_case("svgz"))
                 {
                     let resources_dir = path.parent().map(Path::to_path_buf);
-                    let pixel_budget = svg_pixel_budget(matches, output);
+                    let pixel_budget = svg_pixel_budget(matches, output, concurrency);
 
                     #[cfg(feature = "resize")]
                     let decoder = SvgDecoder::try_new_with_resize_and_budget(
@@ -1930,41 +1924,47 @@ mod limit_tests {
             check_input_limits(
                 Path::new("tests/files/does-not-exist.jpg"),
                 &matches,
-                output
+                output,
+                1
             )
             .is_ok()
         );
     }
 
-    /// The budget must divide by the concurrency the pipeline really uses.
-    /// Reading a stale environment variable here would silently size the
-    /// budget for one image while `--threads` ran several.
-    ///
-    /// The value is taken from the host rather than written as a literal,
-    /// because the parser accepts any positive `--threads` and clamps it to the
-    /// parallelism the host reports: a hardcoded 4 would be reduced to 1 on a
-    /// single-core host and the assertion below would not hold.
+    /// The ceiling the screen applies has to move with the concurrency it is
+    /// handed, because that number is the budget's divisor. It is asserted as
+    /// a strict ordering rather than on absolute pixel counts, which would
+    /// depend on how much memory the host happens to have free.
     #[test]
-    fn the_memory_budget_follows_the_threads_flag() {
-        let single = matches_from(&["rimage", "mozjpeg", "image.jpg"]);
-        assert_eq!(concurrency_from_env(&single), 1);
+    fn a_higher_concurrency_lowers_the_pixel_ceiling() {
+        let matches = matches_from(&["rimage", "mozjpeg"]);
+        let output = rimage::limits::ImageFormatId::Jpeg;
 
-        let requested = crate::cli::utils::threads::num_threads().min(4);
-        let flag = requested.to_string();
-        let many = matches_from(&["rimage", "mozjpeg", "--threads", &flag, "image.jpg"]);
+        let one_at_a_time = rimage::limits::LimitSet::for_input(
+            rimage::limits::ImageFormatId::Jpeg,
+            zune_core::bit_depth::BitDepth::Eight,
+            zune_core::colorspace::ColorSpace::RGBA,
+            &rimage::limits::SystemBudget::probe(1),
+            rimage::limits::PipelineCost::for_conversion(
+                rimage::limits::ImageFormatId::Jpeg,
+                output,
+            ),
+        );
+        let ten_at_a_time = rimage::limits::LimitSet::for_input(
+            rimage::limits::ImageFormatId::Jpeg,
+            zune_core::bit_depth::BitDepth::Eight,
+            zune_core::colorspace::ColorSpace::RGBA,
+            &rimage::limits::SystemBudget::probe(10),
+            rimage::limits::PipelineCost::for_conversion(
+                rimage::limits::ImageFormatId::Jpeg,
+                output,
+            ),
+        );
 
-        assert_eq!(concurrency_from_env(&many), requested);
-    }
-
-    /// An over-large `--threads` is reduced, not rejected, so it can never
-    /// shrink the budget below what the machine itself would allow. Without
-    /// this the flag would be a way to make ordinary images unprocessable.
-    #[test]
-    fn an_over_large_threads_flag_is_clamped_for_the_budget() {
-        let host = crate::cli::utils::threads::num_threads();
-
-        let many = matches_from(&["rimage", "mozjpeg", "--threads", "65535", "image.jpg"]);
-
-        assert_eq!(concurrency_from_env(&many), host);
+        // Only reached when the host reported a memory figure at all; a failed
+        // probe falls back to a constant that is the same either way.
+        if one_at_a_time.binding == rimage::limits::Binding::Memory {
+            assert!(one_at_a_time.max_pixels > ten_at_a_time.max_pixels);
+        }
     }
 }

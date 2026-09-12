@@ -45,6 +45,26 @@ pub fn clamp(requested: usize) -> usize {
     requested.clamp(1, num_threads())
 }
 
+/// How many images the memory budget has to actually provide for.
+///
+/// The limiter never lets more than `clamp(requested)` images run at once, but
+/// when there are fewer inputs than that the surplus is reserved for images
+/// that will never exist: three files with `-t 16` still means three image
+/// buffers alive, not sixteen. Since the per-image ceiling is the memory
+/// divided by this number, dividing by sixteen there rejects an ordinary image
+/// with a message that blames the image for a `-t` that was never used.
+///
+/// `files == 0` means there is nothing to count — the `--print-limits`
+/// diagnostic runs without inputs — and the request is the only guide left.
+pub fn in_flight(requested: usize, files: usize) -> usize {
+    let clamped = clamp(requested);
+    if files == 0 {
+        clamped
+    } else {
+        clamped.min(files)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -71,5 +91,32 @@ mod tests {
     fn the_request_is_never_below_one() {
         assert_eq!(clamp(0), 1);
         assert_eq!(clamp(1), 1);
+    }
+
+    /// Fewer inputs than workers means fewer images in flight, so the budget
+    /// is divided by the input count. This is the case that used to reject a
+    /// single large image under `-t 12` while `-t 1` accepted the same file.
+    #[test]
+    fn the_budget_follows_the_input_count_down() {
+        assert_eq!(in_flight(16, 1), 1);
+        assert_eq!(in_flight(16, 3), 3);
+        assert_eq!(in_flight(4, 3), 3);
+    }
+
+    /// More inputs than workers brings the request back into play: the extras
+    /// queue behind the limiter rather than being decoded at once.
+    #[test]
+    fn the_budget_never_exceeds_the_request() {
+        assert_eq!(in_flight(2, 100), 2);
+        assert_eq!(in_flight(num_threads(), usize::MAX), num_threads());
+    }
+
+    /// No inputs to count leaves the request in charge, so a diagnostic run
+    /// without files still reports the ceiling the flag asks for.
+    #[test]
+    fn an_unknown_input_count_defers_to_the_request() {
+        assert_eq!(in_flight(3, 0), 3);
+        // Still clamped: an over-large request stays over-large either way.
+        assert_eq!(in_flight(usize::MAX, 0), num_threads());
     }
 }

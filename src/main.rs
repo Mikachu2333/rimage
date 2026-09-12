@@ -919,13 +919,6 @@ fn main() -> std::process::ExitCode {
             // encoder, not of the file being read.
             let target_format = rimage::limits::ImageFormatId::from_encoder_name(subcommand);
 
-            // Hidden diagnostic: print the runtime-derived limits and exit
-            // before touching any files. Used to understand why an image was
-            // rejected and to calibrate the pipeline cost estimates.
-            if matches.get_flag("print-limits") {
-                return print_limits(subcommand, threads);
-            }
-
             let thread_pool = match rayon::ThreadPoolBuilder::new().num_threads(threads).build() {
                 Ok(pool) => pool,
                 Err(error) => {
