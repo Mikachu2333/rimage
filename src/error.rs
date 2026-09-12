@@ -308,7 +308,10 @@ impl RimageError {
             RimageError::Output(OutputError::OutOfSpace {
                 needed, available, ..
             }) => Some(format!(
-                "free at least {} on the destination volume, raise -t to process fewer \
+                // `-t` is a concurrency, so fewer images at once means a
+                // *lower* value: the claim used to read "raise -t", which
+                // pointed the user at the change that makes it worse.
+                "free at least {} on the destination volume, lower -t to process fewer \
                      images at once, or lower --speed",
                 human_bytes(needed.saturating_sub(*available))
             )),
