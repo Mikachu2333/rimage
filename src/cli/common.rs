@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::{ArgAction, Command, arg, value_parser};
 use indoc::indoc;
 
-use super::{preprocessors::Preprocessors, utils::threads};
+use super::preprocessors::Preprocessors;
 
 impl CommonArgs for Command {
     fn common_args(self) -> Self {
@@ -41,11 +41,19 @@ impl CommonArgs for Command {
 
                 Limits how many images are decoded and held in memory at once.
                 Higher values increase speed but use more RAM, which may cause out-of-memory errors with large images.
-                By default, processes one image at a time (--threads 1)."#})
-                // u16, not u8: the range upper bound is the machine's core
-                // count, and u8 would cap that at 255 on hardware with more
-                // cores.
-                .value_parser(value_parser!(u16).range(1i64..=threads::num_threads() as i64)),
+                By default, processes one image at a time (--threads 1).
+
+                A value larger than this machine's parallelism is reduced to it,
+                rather than rejected: the same command line then works on
+                machines with different core counts."#})
+                // u16, not u8: a u8 would cap a large machine at 255 workers.
+                //
+                // The parser accepts anything positive and `utils::threads`
+                // clamps it to the machine's parallelism, so an over-large
+                // value is a warning rather than a usage error. Bounding the
+                // range here instead would make a fixed `-t 16` script fail
+                // outright on any machine with fewer cores.
+                .value_parser(value_parser!(u16).range(1i64..=u16::MAX as i64)),
             arg!(-x --strip "Strip metadata when encoding images (where supported)")
                 .action(ArgAction::SetTrue),
             arg!(--"no-progress" "Disables progress bar.")

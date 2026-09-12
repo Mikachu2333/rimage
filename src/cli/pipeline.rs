@@ -8,6 +8,8 @@ use std::io::Read;
 #[cfg(feature = "resize")]
 use crate::cli::preprocessors::ResizeValue;
 use crate::cli::utils::jpeg::JfifDensity;
+#[cfg(feature = "limits")]
+use crate::cli::utils::threads;
 use clap::ArgMatches;
 #[cfg(feature = "avif")]
 use rimage::codecs::avif::AvifEncoder;
@@ -533,14 +535,13 @@ const WEBP_HEADER_PROBE_BYTES: usize = 64 * 1024;
 /// This is deliberately not read from the environment: a second, silently
 /// different source of truth for the same number is how a budget ends up sized
 /// for one image while four are being decoded.
+///
+/// It is also the value that decides whether an image is "too large" at all —
+/// the ceiling moves as this number does — which is why it has to agree with
+/// the pool rather than merely be close to it.
 #[cfg(feature = "limits")]
 fn concurrency_from_env(matches: &ArgMatches) -> usize {
-    matches
-        .get_one::<u16>("threads")
-        .copied()
-        .map(|threads| threads as usize)
-        .filter(|threads| *threads > 0)
-        .unwrap_or(1)
+    threads::clamp(threads::requested(matches))
 }
 
 #[allow(unused_variables)]
@@ -1940,10 +1941,9 @@ mod limit_tests {
     /// budget for one image while `--threads` ran several.
     ///
     /// The value is taken from the host rather than written as a literal,
-    /// because clap bounds `--threads` by the parallelism it sees: a hardcoded
-    /// 4 is rejected at parse time on the three-core macOS runners. On a
-    /// single-core host the flag can only repeat the default, so the case
-    /// degenerates there.
+    /// because the parser accepts any positive `--threads` and clamps it to the
+    /// parallelism the host reports: a hardcoded 4 would be reduced to 1 on a
+    /// single-core host and the assertion below would not hold.
     #[test]
     fn the_memory_budget_follows_the_threads_flag() {
         let single = matches_from(&["rimage", "mozjpeg", "image.jpg"]);
@@ -1954,5 +1954,17 @@ mod limit_tests {
         let many = matches_from(&["rimage", "mozjpeg", "--threads", &flag, "image.jpg"]);
 
         assert_eq!(concurrency_from_env(&many), requested);
+    }
+
+    /// An over-large `--threads` is reduced, not rejected, so it can never
+    /// shrink the budget below what the machine itself would allow. Without
+    /// this the flag would be a way to make ordinary images unprocessable.
+    #[test]
+    fn an_over_large_threads_flag_is_clamped_for_the_budget() {
+        let host = crate::cli::utils::threads::num_threads();
+
+        let many = matches_from(&["rimage", "mozjpeg", "--threads", "65535", "image.jpg"]);
+
+        assert_eq!(concurrency_from_env(&many), host);
     }
 }

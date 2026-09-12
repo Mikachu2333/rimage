@@ -17,6 +17,7 @@ use cli::{
     utils::{
         jpeg::{insert_jpeg_exif_app1, read_jpeg_source_metadata},
         paths::{expand_file_lists, get_paths, paths_equivalent},
+        threads,
     },
 };
 use console::{Term, style};
@@ -898,7 +899,16 @@ fn main() -> std::process::ExitCode {
 
     match matches.subcommand() {
         Some((subcommand, matches)) => {
-            let threads = matches.get_one::<u16>("threads").copied().unwrap_or(1) as usize;
+            // Clamped here, and reported once, so the number the pool is built
+            // with is the same one the memory budget divides by.
+            let requested_threads = threads::requested(matches);
+            let threads = threads::clamp(requested_threads);
+            if threads != requested_threads {
+                log::warn!(
+                    "--threads {requested_threads} is more than this machine can run in parallel; \
+                     using {threads} instead"
+                );
+            }
             // What every input in this run is being turned into. The memory
             // budget depends on it, because the encoder's scratch buffers are
             // the largest term in it and their number is a property of the
