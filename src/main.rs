@@ -29,9 +29,13 @@ use serde::{Deserialize, Serialize};
 use zune_core::{bit_depth::BitDepth, colorspace::ColorSpace};
 use zune_image::{
     core_filters::{colorspace::ColorspaceConv, depth::Depth},
-    image::Image,
     traits::OperationsTrait,
 };
+// Only `check_output_limits` names the type, and that whole check is compiled
+// out with the feature: without the gate this import is unused in every
+// `build-binary` build that leaves `limits` off.
+#[cfg(feature = "limits")]
+use zune_image::image::Image;
 use zune_imageprocs::auto_orient::AutoOrient;
 
 use crate::cli::pipeline::encoder;
