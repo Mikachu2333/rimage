@@ -1908,7 +1908,7 @@ mod limit_tests {
 
         let output = rimage::limits::ImageFormatId::Jpeg;
 
-        check_input_limits(Path::new("tests/files/jpg/f1t.jpg"), &matches, output)
+        check_input_limits(Path::new("tests/files/jpg/f1t.jpg"), &matches, output, 1)
             .expect("an ordinary fixture must not be rejected");
     }
 

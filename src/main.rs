@@ -919,6 +919,13 @@ fn main() -> std::process::ExitCode {
             // encoder, not of the file being read.
             let target_format = rimage::limits::ImageFormatId::from_encoder_name(subcommand);
 
+            // Hidden diagnostic: print the runtime-derived limits and exit
+            // before touching any files. Used to understand why an image was
+            // rejected and to calibrate the pipeline cost estimates.
+            if matches.get_flag("print-limits") {
+                return print_limits(subcommand, threads);
+            }
+
             let thread_pool = match rayon::ThreadPoolBuilder::new().num_threads(threads).build() {
                 Ok(pool) => pool,
                 Err(error) => {
@@ -999,6 +1006,7 @@ fn main() -> std::process::ExitCode {
                 }
             };
             let file_count = paths.len() as u64;
+            let in_flight = threads::in_flight(requested_threads, paths.len());
 
             let pb_main = multi.add(ProgressBar::new(file_count));
             pb_main.set_style(sty_main);
@@ -1139,7 +1147,7 @@ fn main() -> std::process::ExitCode {
                                 ext.eq_ignore_ascii_case("svg") || ext.eq_ignore_ascii_case("svgz")
                             });
 
-                        let mut img = fail_pipeline!(state, decode(&input, matches, target_format));
+                        let mut img = fail_pipeline!(state, decode(&input, matches, target_format, in_flight));
 
                         // Preserve JPEG metadata directly from the source file.
                         // EXIF is copied as a raw APP1 segment instead of being
@@ -1253,7 +1261,7 @@ fn main() -> std::process::ExitCode {
                         // a truncated temporary behind.
                         #[cfg(feature = "limits")]
                         fail_pipeline!(state, check_output_limits(
-                            &output, &img, target_format, threads
+                            &output, &img, target_format, in_flight
                         ));
 
                         fail_pipeline!(state, prepare_output_parent(&output, output_root.as_deref())
