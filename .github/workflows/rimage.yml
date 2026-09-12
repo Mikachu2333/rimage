@@ -73,7 +73,7 @@ jobs:
     env:
       CARGO_BUILD_TARGET: ${{ matrix.target }}
       CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: qemu-aarch64 -L /usr/aarch64-linux-gnu
-      RUSTFLAGS: -D warnings ${{ matrix.rustflags }}
+      RUSTFLAGS: "-D warnings ${{ matrix.rustflags }}"
 
     steps:
       - name: checkout
@@ -193,7 +193,7 @@ jobs:
       - name: build release binary
         shell: bash
         env:
-          RUSTFLAGS: -D warnings ${{ matrix.rustflags }}
+          RUSTFLAGS: "-D warnings ${{ matrix.rustflags }}"
         run: |
           set -euo pipefail
           if [[ "${{ matrix.cross }}" == "true" ]]; then
@@ -205,7 +205,7 @@ jobs:
       - name: run code tests
         shell: bash
         env:
-          RUSTFLAGS: -D warnings ${{ matrix.rustflags }}
+          RUSTFLAGS: "-D warnings ${{ matrix.rustflags }}"
         run: |
           set -euo pipefail
           if [[ "${{ matrix.cross }}" == "true" ]]; then
@@ -215,10 +215,10 @@ jobs:
           fi
 
       - name: run doc tests
-        if: matrix.target == "x86_64-unknown-linux-gnu"
+        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' }}
         shell: bash
         env:
-          RUSTFLAGS: -D warnings ${{ matrix.rustflags }}
+          RUSTFLAGS: "-D warnings ${{ matrix.rustflags }}"
         run: |
           set -euo pipefail
           cargo test --release --all-features --doc
