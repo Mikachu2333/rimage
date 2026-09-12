@@ -64,13 +64,25 @@ fn decode_options() -> DecoderOptions {
 /// The header is all that is read, so the check costs a few kilobytes even for
 /// an image that is gigabytes when decoded.
 ///
+/// `output` is the format the image is being converted *to*, not the one on
+/// disk. It matters because the encoder's scratch buffers are the largest term
+/// in the budget and their number is a property of the encoder: screening a
+/// JPEG-to-AVIF conversion with JPEG's own cost admits images several times
+/// larger than the AVIF encoder can hold. The pixel layout is likewise taken
+/// from the widest the input format allows rather than assumed, because the
+/// screen cannot see the real one yet.
+///
 /// Returns `Ok(())` when the format has no readable dimensions for us (an SVG
 /// render target, for instance, which is bounded separately) or when they fit.
 /// The failure is a [`RimageError`] rather than an [`ImageErrors`] because the
 /// violation is resolved here and would otherwise have to be re-parsed out of a
 /// string to be reported.
 #[cfg(feature = "limits")]
-fn check_input_limits(path: &Path, matches: &ArgMatches) -> Result<(), rimage::error::RimageError> {
+fn check_input_limits(
+    path: &Path,
+    matches: &ArgMatches,
+    output: rimage::limits::ImageFormatId,
+) -> Result<(), rimage::error::RimageError> {
     use rimage::limits::{ImageFormatId, LimitSet, PipelineCost, SystemBudget};
 
     let extension = path
@@ -91,13 +103,14 @@ fn check_input_limits(path: &Path, matches: &ArgMatches) -> Result<(), rimage::e
         return Ok(());
     };
 
+    let (depth, colorspace) = format.max_pixel_layout();
     let budget = SystemBudget::probe(concurrency_from_env(matches));
     let limits = LimitSet::for_input(
         format,
-        zune_core::bit_depth::BitDepth::Eight,
-        zune_core::colorspace::ColorSpace::RGB,
+        depth,
+        colorspace,
         &budget,
-        PipelineCost::for_encoder(format),
+        PipelineCost::for_conversion(format, output),
     );
 
     limits.check(width, height).map_err(|violation| {
@@ -535,14 +548,15 @@ fn concurrency_from_env(matches: &ArgMatches) -> usize {
 pub fn decode<P: AsRef<Path>>(
     f: P,
     matches: &ArgMatches,
+    output: rimage::limits::ImageFormatId,
 ) -> Result<Image, rimage::error::RimageError> {
     // The size pre-check already knows which ceiling it broke, so it produces
     // the structured error directly instead of round-tripping through a string.
     #[cfg(feature = "limits")]
-    check_input_limits(f.as_ref(), matches)?;
+    check_input_limits(f.as_ref(), matches, output)?;
 
     Image::open_with_options(f.as_ref(), decode_options())
-        .or_else(|e| decode_with_fallback(f.as_ref(), matches, e))
+        .or_else(|e| decode_with_fallback(f.as_ref(), matches, output, e))
         .map_err(|e| classify_decode_failure(f.as_ref(), matches, &e))
 }
 
@@ -554,18 +568,21 @@ pub fn decode<P: AsRef<Path>>(
 /// Returns `None` when the `limits` feature is off, which makes the decoder
 /// fall back to its own constant.
 #[cfg(feature = "svg")]
-fn svg_pixel_budget(matches: &ArgMatches) -> Option<u64> {
+fn svg_pixel_budget(matches: &ArgMatches, output: rimage::limits::ImageFormatId) -> Option<u64> {
     #[cfg(feature = "limits")]
     {
         use rimage::limits::{ImageFormatId, LimitSet, PipelineCost, SystemBudget};
 
+        let (depth, colorspace) = ImageFormatId::Svg.max_pixel_layout();
         let budget = SystemBudget::probe(concurrency_from_env(matches));
         let limits = LimitSet::for_input(
             ImageFormatId::Svg,
-            zune_core::bit_depth::BitDepth::Eight,
-            zune_core::colorspace::ColorSpace::RGBA,
+            depth,
+            colorspace,
             &budget,
-            PipelineCost::for_encoder(ImageFormatId::Svg),
+            // The render target has to survive the encoder as well, so the
+            // same conversion cost applies here as to any other input.
+            PipelineCost::for_conversion(ImageFormatId::Svg, output),
         );
 
         Some(limits.max_pixels)
@@ -573,7 +590,7 @@ fn svg_pixel_budget(matches: &ArgMatches) -> Option<u64> {
 
     #[cfg(not(feature = "limits"))]
     {
-        let _ = matches;
+        let _ = (matches, output);
         None
     }
 }
@@ -586,6 +603,7 @@ fn svg_pixel_budget(matches: &ArgMatches) -> Option<u64> {
 fn decode_with_fallback(
     path: &Path,
     matches: &ArgMatches,
+    output: rimage::limits::ImageFormatId,
     e: ImageErrors,
 ) -> Result<Image, ImageErrors> {
     {
@@ -600,7 +618,7 @@ fn decode_with_fallback(
                     .is_some_and(|f| f.eq_ignore_ascii_case("svg") | f.eq_ignore_ascii_case("svgz"))
                 {
                     let resources_dir = path.parent().map(Path::to_path_buf);
-                    let pixel_budget = svg_pixel_budget(matches);
+                    let pixel_budget = svg_pixel_budget(matches, output);
 
                     #[cfg(feature = "resize")]
                     let decoder = SvgDecoder::try_new_with_resize_and_budget(
@@ -1893,7 +1911,9 @@ mod limit_tests {
     fn an_ordinary_image_passes_the_pre_check() {
         let matches = matches_from(&["rimage", "mozjpeg", "tests/files/jpg/f1t.jpg"]);
 
-        check_input_limits(Path::new("tests/files/jpg/f1t.jpg"), &matches)
+        let output = rimage::limits::ImageFormatId::Jpeg;
+
+        check_input_limits(Path::new("tests/files/jpg/f1t.jpg"), &matches, output)
             .expect("an ordinary fixture must not be rejected");
     }
 
@@ -1903,7 +1923,16 @@ mod limit_tests {
     fn a_missing_file_is_not_a_size_error() {
         let matches = matches_from(&["rimage", "mozjpeg", "tests/files/does-not-exist.jpg"]);
 
-        assert!(check_input_limits(Path::new("tests/files/does-not-exist.jpg"), &matches).is_ok());
+        let output = rimage::limits::ImageFormatId::Jpeg;
+
+        assert!(
+            check_input_limits(
+                Path::new("tests/files/does-not-exist.jpg"),
+                &matches,
+                output
+            )
+            .is_ok()
+        );
     }
 
     /// The budget must divide by the concurrency the pipeline really uses.

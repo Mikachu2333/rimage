@@ -112,6 +112,21 @@ impl ProcessingState {
     fn record(&mut self, file: rimage::exit::ExitCode) {
         self.run = self.run.record(file);
     }
+
+    /// Record a file that was written.
+    ///
+    /// Pushing the result and recording the success happen together because
+    /// they are the same event: a run that wrote half its files is
+    /// [`ExitCode::Partial`](rimage::exit::ExitCode::Partial), and it can only
+    /// be recognised as such if every write leaves a trace. Recording the
+    /// result alone let the verdict stay at whatever the failures had set, so
+    /// a partial run was reported as a clean input or output failure — which
+    /// tells a wrapper nothing was written and invites a retry over files that
+    /// were already replaced.
+    fn record_success(&mut self, result: Result) {
+        self.results.push(result);
+        self.record(rimage::exit::ExitCode::Success);
+    }
 }
 
 /// Record a failure on the shared state.
@@ -339,36 +354,36 @@ fn size_ratio(output_size: u64, input_size: u64) -> f64 {
     }
 }
 
-/// Refuse to write `img` when the destination volume cannot hold the result.
+/// Refuse to encode `img` when the conversion, or the destination, cannot hold
+/// the result.
 ///
 /// Returns the failure wrapped for the caller's side — an unwritable output —
-/// because a full volume is a property of the destination, not of the image.
+/// because both ceilings describe the write, not the read.
 ///
-/// The estimate deliberately uses the *decoded* footprint rather than a
-/// compressed-size guess: it is the one number this code can know without
-/// encoding first, and it is an upper bound for lossy formats and the right
-/// order of magnitude for lossless ones, which is what a pre-flight check
-/// needs. A volume with room for the decoded pixels will hold any sane
-/// encoding of them.
+/// Two independent ceilings are applied, and they answer different questions:
+///
+/// 1. *Memory.* The pre-decode screen in `cli::pipeline` runs before the image
+///    exists, so it has to assume the widest layout the input format allows
+///    and can only guess what the encoder will need. Here the real bit depth,
+///    colour space and dimensions are known, and the encoder's own buffers —
+///    which dominate for `avif` and `oxipng` — have not been allocated yet.
+///    Checking now is what turns an allocation abort inside a codec into a
+///    message naming the ceiling, and it is also the only place the *output*
+///    format's dimension caps are enforced.
+/// 2. *Disk.* The volume has to hold what the encoder writes.
+///
+/// `concurrency` divides the memory budget for the same reason it does in the
+/// pre-decode screen: every image in flight holds its own buffers.
 #[cfg(feature = "limits")]
 fn check_output_limits(
     output: &Path,
     img: &Image,
-    encoder_name: &str,
+    format: rimage::limits::ImageFormatId,
+    concurrency: usize,
 ) -> std::result::Result<(), rimage::error::RimageError> {
-    use rimage::limits::{ImageFormatId, LimitSet, PipelineCost, SystemBudget, bytes_per_pixel};
+    use rimage::limits::{LimitSet, PipelineCost, SystemBudget, bytes_per_pixel};
 
-    let format = ImageFormatId::from_encoder_name(encoder_name);
-
-    // Only formats with a byte-relevant ceiling need the probe. For everything
-    // else `for_output` still yields the pixel limits, whose byte half is the
-    // memory budget rather than free space, and comparing against that would
-    // reject an image that fits on disk merely because it is near the memory
-    // ceiling — the exact case the decoder already decided.
-    let Some(_free) = rimage::limits::free_space_at(output) else {
-        return Ok(());
-    };
-    let budget = SystemBudget::probe(1);
+    let budget = SystemBudget::probe(concurrency);
     let limits = LimitSet::for_output(
         format,
         img.depth(),
@@ -378,17 +393,30 @@ fn check_output_limits(
         output,
     );
 
+    let (width, height) = img.dimensions();
+    let width = width as u64;
+    let height = height as u64;
+
+    limits
+        .check(width, height)
+        .map_err(|violation| rimage::error::output_size_limit(output, format, violation))?;
+
     // The byte ceiling only describes *this volume* when free space was the
     // binding constraint. Otherwise it is the memory budget in disguise, and
-    // rejecting on it would duplicate the decode-time check under a message
-    // about disk space.
+    // rejecting on it would duplicate the check above under a message about
+    // disk space.
     if limits.bytes_binding != rimage::limits::Binding::Disk {
         return Ok(());
     }
 
-    let (width, height) = img.dimensions();
-    let footprint = (width as u64)
-        .saturating_mul(height as u64)
+    // The estimate deliberately uses the *decoded* footprint rather than a
+    // compressed-size guess: it is the one number this code can know without
+    // encoding first, and it is an upper bound for lossy formats and the right
+    // order of magnitude for lossless ones, which is what a pre-flight check
+    // needs. A volume with room for the decoded pixels will hold any sane
+    // encoding of them.
+    let footprint = width
+        .saturating_mul(height)
         .saturating_mul(bytes_per_pixel(img.depth(), img.colorspace()));
 
     limits
@@ -871,6 +899,11 @@ fn main() -> std::process::ExitCode {
     match matches.subcommand() {
         Some((subcommand, matches)) => {
             let threads = matches.get_one::<u16>("threads").copied().unwrap_or(1) as usize;
+            // What every input in this run is being turned into. The memory
+            // budget depends on it, because the encoder's scratch buffers are
+            // the largest term in it and their number is a property of the
+            // encoder, not of the file being read.
+            let target_format = rimage::limits::ImageFormatId::from_encoder_name(subcommand);
 
             // Hidden diagnostic: print the runtime-derived limits and exit
             // before touching any files. Used to understand why an image was
@@ -1099,7 +1132,7 @@ fn main() -> std::process::ExitCode {
                                 ext.eq_ignore_ascii_case("svg") || ext.eq_ignore_ascii_case("svgz")
                             });
 
-                        let mut img = fail_pipeline!(state, decode(&input, matches));
+                        let mut img = fail_pipeline!(state, decode(&input, matches, target_format));
 
                         // Preserve JPEG metadata directly from the source file.
                         // EXIF is copied as a raw APP1 segment instead of being
@@ -1205,15 +1238,16 @@ fn main() -> std::process::ExitCode {
 
                         pb.set_style(sty_aux_encode.clone());
 
-                        // Reject an output the destination volume cannot hold
-                        // *before* encoding into a temporary file. The encode
-                        // itself is the expensive part, and a volume that fills
-                        // up mid-write leaves a truncated temporary behind. The
-                        // estimate is the decoded footprint, which is the right
-                        // order of magnitude for both lossless expansion and
-                        // lossy output plus container overhead.
+                        // Reject an output the machine or the destination
+                        // volume cannot hold *before* encoding into a
+                        // temporary file. The encode itself is the expensive
+                        // part: it is where the codec allocates its scratch
+                        // buffers, and a volume that fills up mid-write leaves
+                        // a truncated temporary behind.
                         #[cfg(feature = "limits")]
-                        fail_pipeline!(state, check_output_limits(&output, &img, subcommand));
+                        fail_pipeline!(state, check_output_limits(
+                            &output, &img, target_format, threads
+                        ));
 
                         fail_pipeline!(state, prepare_output_parent(&output, output_root.as_deref())
                             .map_err(|e| rimage::error::output_io_error(&output, &e)));
@@ -1287,7 +1321,7 @@ fn main() -> std::process::ExitCode {
                         let absolute_output_path =
                             pretty_path(&normalize_path(&output, &current_dir));
 
-                        state.results.push(Result {
+                        state.record_success(Result {
                             output: output.to_path_buf(),
                             input_size,
                             output_size,
@@ -1512,6 +1546,49 @@ mod tests {
 
     fn test_base_src() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")
+    }
+
+    fn written(input_size: u64, output_size: u64) -> Result {
+        Result {
+            output: PathBuf::from("a.jpg"),
+            input_size,
+            output_size,
+        }
+    }
+
+    /// A written file must leave a trace on the verdict.
+    ///
+    /// This is the whole reason the verdict is tracked separately from the
+    /// result list: a run that wrote some files and lost others is
+    /// `Partial`, and it can only be recognised if every write is recorded.
+    #[test]
+    fn a_written_file_is_recorded_as_a_success() {
+        let mut state = ProcessingState::new();
+        state.record_success(written(100, 50));
+
+        assert_eq!(state.run, rimage::exit::RunState::Succeeded);
+        assert_eq!(state.results.len(), 1);
+    }
+
+    /// A success next to a failure is the case [`rimage::exit::ExitCode::Partial`]
+    /// exists for: the user's files were already modified, so a wrapper must
+    /// not treat the run as a clean no-op and retry it.
+    #[test]
+    fn a_run_that_wrote_one_file_and_lost_another_is_partial() {
+        for failure in [
+            rimage::exit::ExitCode::Input,
+            rimage::exit::ExitCode::Output,
+        ] {
+            let mut state = ProcessingState::new();
+            state.record_success(written(100, 50));
+            state.record(failure);
+
+            assert_eq!(
+                state.run.exit_code(),
+                rimage::exit::ExitCode::Partial,
+                "a success plus {failure} must not be reported as a clean failure"
+            );
+        }
     }
 
     #[test]

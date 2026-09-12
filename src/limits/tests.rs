@@ -240,6 +240,79 @@ fn pipeline_cost_sums_all_stages() {
     assert_eq!(cost.total(), 23);
 }
 
+/// The encode half of a conversion belongs to the format being written.
+///
+/// Taking it from the input instead is what screened a JPEG-to-AVIF conversion
+/// against JPEG's 6 buffers while the AVIF encoder went on to hold 19: the
+/// encode buffers dominate the total, and only the output format knows them.
+#[test]
+fn conversion_cost_takes_its_encode_half_from_the_output_format() {
+    let jpeg_to_jpeg = PipelineCost::for_conversion(ImageFormatId::Jpeg, ImageFormatId::Jpeg);
+    let jpeg_to_avif = PipelineCost::for_conversion(ImageFormatId::Jpeg, ImageFormatId::Avif);
+
+    assert_eq!(
+        jpeg_to_avif.encode,
+        PipelineCost::for_encoder(ImageFormatId::Avif).encode
+    );
+    assert_eq!(
+        jpeg_to_avif.decode,
+        PipelineCost::for_encoder(ImageFormatId::Jpeg).decode
+    );
+    assert!(
+        jpeg_to_avif.total() > jpeg_to_jpeg.total(),
+        "encoding to avif must cost more than encoding to jpeg: \
+         {jpeg_to_avif:?} vs {jpeg_to_jpeg:?}"
+    );
+}
+
+/// Swapping the arguments must change the answer, which is the whole point of
+/// taking two: a PNG read for a JPEG output is not a JPEG read for a PNG
+/// output, and collapsing them would silently reintroduce the wrong estimate.
+#[test]
+fn conversion_cost_is_not_symmetric() {
+    let png_to_jpeg = PipelineCost::for_conversion(ImageFormatId::Png, ImageFormatId::Jpeg);
+    let jpeg_to_png = PipelineCost::for_conversion(ImageFormatId::Jpeg, ImageFormatId::Png);
+
+    assert!(png_to_jpeg.total() < jpeg_to_png.total());
+}
+
+/// Every assumed layout has to be at least as wide as 8-bit RGB, or a plain
+/// photograph would be sized as if it were narrower than it is and the screen
+/// would admit images it cannot hold.
+#[test]
+fn assumed_layouts_are_never_narrower_than_rgb8() {
+    for format in [
+        ImageFormatId::Jpeg,
+        ImageFormatId::Png,
+        ImageFormatId::WebP,
+        ImageFormatId::Avif,
+        ImageFormatId::Tiff,
+        ImageFormatId::Svg,
+        ImageFormatId::Other,
+    ] {
+        let (depth, colorspace) = format.max_pixel_layout();
+        let assumed = bytes_per_pixel(depth, colorspace);
+        let rgb8 = bytes_per_pixel(BitDepth::Eight, ColorSpace::RGB);
+
+        assert!(
+            assumed >= rgb8,
+            "{format:?} assumes {assumed} B/px, below the {rgb8} B/px floor"
+        );
+    }
+}
+
+/// The screen has to assume the widest layout the format allows, because it
+/// runs before the image exists. A 16-bit RGBA PNG is the case an RGB8 floor
+/// would have sized four times too small.
+#[test]
+fn the_assumed_layout_covers_the_widest_the_format_allows() {
+    let (depth, colorspace) = ImageFormatId::Png.max_pixel_layout();
+    assert_eq!(bytes_per_pixel(depth, colorspace), 8);
+
+    let (depth, colorspace) = ImageFormatId::Jpeg.max_pixel_layout();
+    assert_eq!(bytes_per_pixel(depth, colorspace), 4);
+}
+
 #[test]
 fn format_extension_lookup_is_case_insensitive() {
     assert_eq!(ImageFormatId::from_extension("JPG"), ImageFormatId::Jpeg);

@@ -183,6 +183,37 @@ impl ImageFormatId {
             _ => ImageFormatId::Other,
         }
     }
+
+    /// The widest pixel layout a decoder may hand back for this format.
+    ///
+    /// A size screen that runs *before* decoding cannot ask the image what it
+    /// holds, so it has to assume, and the only safe direction is to assume
+    /// the widest layout the format allows. Under-estimating admits an image
+    /// that then exhausts memory inside a codec; over-estimating merely turns
+    /// a large-but-handled image into a message telling the user to resize.
+    ///
+    /// These are ceilings, not typical values: an ordinary 8-bit RGB JPEG is
+    /// 3 bytes per pixel, not the 4 this returns. That gap is why the
+    /// pipeline re-checks the real layout once the image is decoded, where
+    /// `Image::depth` and `Image::colorspace` are known exactly.
+    pub const fn max_pixel_layout(self) -> (BitDepth, ColorSpace) {
+        match self {
+            // 8-bit only, but a four-component (CMYK/YCCK) source is legal.
+            ImageFormatId::Jpeg => (BitDepth::Eight, ColorSpace::RGBA),
+            // 16-bit samples and an alpha channel are both legal.
+            ImageFormatId::Png => (BitDepth::Sixteen, ColorSpace::RGBA),
+            ImageFormatId::WebP => (BitDepth::Eight, ColorSpace::RGBA),
+            // High-bit-depth sources are converted to 8-bit on decode and
+            // alpha is always carried, so the ceiling is 8-bit RGBA.
+            ImageFormatId::Avif => (BitDepth::Eight, ColorSpace::RGBA),
+            ImageFormatId::Tiff => (BitDepth::Sixteen, ColorSpace::RGBA),
+            // Rasterised at 8 bits with alpha.
+            ImageFormatId::Svg => (BitDepth::Eight, ColorSpace::RGBA),
+            // Nothing is known about the file, so assume the widest layout
+            // anything this program decodes can produce.
+            ImageFormatId::Other => (BitDepth::Sixteen, ColorSpace::RGBA),
+        }
+    }
 }
 
 /// Fraction of the reported free memory this process is willing to spend.
@@ -283,6 +314,26 @@ impl PipelineCost {
             _ => 8,
         };
         Self::new(3, 0, 0, encode)
+    }
+
+    /// Cost of a whole conversion: decoding `input`, then encoding to `output`.
+    ///
+    /// The two halves belong to different formats, and taking both from one of
+    /// them is what screened a JPEG-to-AVIF conversion against JPEG's
+    /// 6-buffer estimate while the AVIF encoder went on to hold 19: the encode
+    /// buffers dominate, and it is the *output* format that decides how many
+    /// there are. The arguments are therefore not interchangeable — swapping
+    /// them changes the answer.
+    pub const fn for_conversion(input: ImageFormatId, output: ImageFormatId) -> Self {
+        let decoded = Self::for_encoder(input);
+        let encoded = Self::for_encoder(output);
+
+        Self::new(
+            decoded.decode,
+            decoded.resize,
+            decoded.quantize,
+            encoded.encode,
+        )
     }
 }
 
