@@ -78,6 +78,7 @@ fn decode_options() -> DecoderOptions {
 /// violation is resolved here and would otherwise have to be re-parsed out of a
 /// string to be reported.
 #[cfg(feature = "limits")]
+#[allow(unused_variables)]
 fn check_input_limits(
     path: &Path,
     matches: &ArgMatches,
@@ -531,9 +532,7 @@ const WEBP_HEADER_PROBE_BYTES: usize = 64 * 1024;
 /// memory divided by the smaller of the two. Re-deriving it here would be a
 /// second, silently different source of truth for the number that decides
 /// whether an image is "too large".
-
-#[allow(unused_variables)]
-#[allow(unused_mut)]
+#[allow(unused_mut, unused_variables)]
 pub fn decode<P: AsRef<Path>>(
     f: P,
     matches: &ArgMatches,
@@ -558,6 +557,7 @@ pub fn decode<P: AsRef<Path>>(
 /// Returns `None` when the `limits` feature is off, which makes the decoder
 /// fall back to its own constant.
 #[cfg(feature = "svg")]
+#[allow(unused_variables)]
 fn svg_pixel_budget(
     matches: &ArgMatches,
     output: rimage::limits::ImageFormatId,
@@ -1937,7 +1937,6 @@ mod limit_tests {
     /// depend on how much memory the host happens to have free.
     #[test]
     fn a_higher_concurrency_lowers_the_pixel_ceiling() {
-        let matches = matches_from(&["rimage", "mozjpeg"]);
         let output = rimage::limits::ImageFormatId::Jpeg;
 
         let one_at_a_time = rimage::limits::LimitSet::for_input(
@@ -1961,8 +1960,13 @@ mod limit_tests {
             ),
         );
 
-        // Only reached when the host reported a memory figure at all; a failed
-        // probe falls back to a constant that is the same either way.
+        // A failed probe returns the same fixed fallback for every concurrency,
+        // so the two pixel ceilings come out equal and there is nothing to
+        // compare; only assert against a figure the host actually reported.
+        if !rimage::limits::SystemBudget::probe(1).is_probed() {
+            return;
+        }
+
         if one_at_a_time.binding == rimage::limits::Binding::Memory {
             assert!(one_at_a_time.max_pixels > ten_at_a_time.max_pixels);
         }

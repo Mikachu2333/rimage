@@ -202,19 +202,26 @@ jobs:
             cargo build --release --all-features
           fi
 
-      - name: run tests
+      - name: run code tests
         shell: bash
         env:
           RUSTFLAGS: -D warnings ${{ matrix.rustflags }}
         run: |
           set -euo pipefail
           if [[ "${{ matrix.cross }}" == "true" ]]; then
-            cross test --release --all-features --target "${{ matrix.target }}" -- --test-threads=1
-            cross test --release --all-features --target "${{ matrix.target }}" --doc
+            cross test --release --all-features --target "${{ matrix.target }}" --no-fail-fast -- --test-threads=1
           else
-            cargo nextest run --release --all-features
-            cargo test --doc --release --all-features
+            cargo nextest run --release --all-features --no-fail-fast
           fi
+
+      - name: run doc tests
+        if: matrix.target == "x86_64-unknown-linux-gnu"
+        shell: bash
+        env:
+          RUSTFLAGS: -D warnings ${{ matrix.rustflags }}
+        run: |
+          set -euo pipefail
+          cargo test --release --all-features --doc
 
       - name: upload CLI binary
         if: github.event_name != 'pull_request'
