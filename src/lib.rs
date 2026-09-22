@@ -126,5 +126,27 @@ pub mod operations;
 /// All additional codecs for the zune_image
 pub mod codecs;
 
+/// Runtime-derived image size limits.
+///
+/// Deciding whether an image is too large to process is a property of the
+/// machine, not of the source code, so the ceiling is derived from the format's
+/// own published limits intersected with the memory actually available. See
+/// [`limits::SystemBudget`] and [`limits::LimitSet`].
+pub mod limits;
+
+/// Structured, side-tagged pipeline errors.
+///
+/// Wraps [`zune_image::errors::ImageErrors`] so a failure can say whether it
+/// happened reading the input or writing the output, and which format was
+/// involved. See [`error::RimageError`].
+pub mod error;
+
+/// Exit codes reported to the shell.
+///
+/// A caller can distinguish a clean success, a usage error, a failure reading
+/// an input, a failure writing an output, and a run that only partly succeeded
+/// without parsing stderr. See [`exit::ExitCode`].
+pub mod exit;
+
 #[cfg(test)]
 mod test_utils;

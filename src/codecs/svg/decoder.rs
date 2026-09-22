@@ -25,7 +25,12 @@ const SVG_BYTES_PER_PIXEL: u64 = 4;
 
 const SVG_SIMULTANEOUS_PIXEL_BUFFERS: u64 = 3;
 
-/// Maximum number of pixels an SVG render target may cover.
+/// Maximum number of pixels an SVG render target may cover by default.
+///
+/// Used when a caller does not supply its own budget through
+/// [`SvgOptions::pixel_budget`]. The runtime-derived limit from
+/// `rimage::limits` is preferred; this constant is the fallback so the decoder
+/// is still safe when used on its own.
 pub const MAX_TARGET_PIXELS: u64 =
     MAX_SVG_DECODE_BYTES / (SVG_BYTES_PER_PIXEL * SVG_SIMULTANEOUS_PIXEL_BUFFERS);
 
@@ -40,8 +45,15 @@ pub struct SvgOptions {
     /// Explicit render target in pixels. When `None`, the SVG is rendered
     /// at its intrinsic size.
     ///
-    /// The resolved render target may not exceed [`MAX_TARGET_PIXELS`] pixels.
+    /// The resolved render target may not exceed the pixel budget.
     pub target_size: Option<(u32, u32)>,
+    /// Maximum pixels the render target may cover.
+    ///
+    /// `None` falls back to [`MAX_TARGET_PIXELS`]. Callers that can probe the
+    /// machine should pass a budget derived from
+    /// [`crate::limits::SystemBudget`] instead, so the ceiling tracks the
+    /// memory actually available rather than a constant.
+    pub pixel_budget: Option<u64>,
 }
 
 /// A decoder that renders SVG images into raster pixels using `resvg`.
@@ -50,9 +62,23 @@ pub struct SvgOptions {
 /// quality of the source instead of resampling a rasterized image.
 pub struct SvgDecoder {
     tree: usvg::Tree,
+    /// The raw, unrounded intrinsic size.
+    ///
+    /// Kept as f32 because the decode-time scale factor must use the exact
+    /// value: rendering a 99.6px-wide vector into a 100px target calls for a
+    /// scale of 100/99.6, not 100/100. Callers that need integer pixels (the
+    /// resize callback) get their own rounded, `.max(1)`-clamped copy at the
+    /// call site.
     intrinsic: (f32, f32),
     target: (usize, usize),
 }
+
+/// Upper bound on an SVG/SVGZ document read into memory before parsing.
+///
+/// `Tree::from_data` reads the whole buffer, and a hostile multi-gigabyte
+/// "svg" would exhaust memory before the pixel budget check could run. 256
+/// MiB is far beyond any real SVG; the render target is bounded separately.
+const MAX_SVG_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Parses an SVG document into a `resvg` tree.
 ///
@@ -61,13 +87,20 @@ pub struct SvgDecoder {
 /// document. `Tree::from_data` detects and decompresses gzip (SVGZ)
 /// automatically.
 fn parse_tree<R: Read>(
-    mut source: R,
+    source: R,
     resources_dir: Option<PathBuf>,
 ) -> Result<usvg::Tree, ImageErrors> {
     let mut data = Vec::new();
     source
+        .take(MAX_SVG_BYTES + 1)
         .read_to_end(&mut data)
         .map_err(|e| ImageErrors::ImageDecodeErrors(format!("Unable to read SVG data - {e}")))?;
+    if data.len() as u64 > MAX_SVG_BYTES {
+        return Err(ImageErrors::ImageDecodeErrors(format!(
+            "SVG input exceeds the {} MiB read limit",
+            MAX_SVG_BYTES / 1024 / 1024
+        )));
+    }
 
     let mut usvg_options = usvg::Options {
         resources_dir,
@@ -102,6 +135,25 @@ impl SvgDecoder {
         R: Read,
         F: FnOnce((usize, usize)) -> Result<Option<(u32, u32)>, ImageErrors>,
     {
+        Self::try_new_with_resize_and_budget(source, resources_dir, None, target_for_size)
+    }
+
+    /// Same as [`SvgDecoder::try_new_with_resize`], but with an explicit pixel
+    /// budget instead of the module's fallback constant.
+    ///
+    /// Callers that can probe the machine pass a limit derived from
+    /// [`crate::limits::SystemBudget`] here, so an SVG render target is bounded
+    /// by the same memory model every other format uses.
+    pub fn try_new_with_resize_and_budget<R, F>(
+        source: R,
+        resources_dir: Option<PathBuf>,
+        pixel_budget: Option<u64>,
+        target_for_size: F,
+    ) -> Result<Self, ImageErrors>
+    where
+        R: Read,
+        F: FnOnce((usize, usize)) -> Result<Option<(u32, u32)>, ImageErrors>,
+    {
         let tree = parse_tree(source, resources_dir.clone())?;
         let size = tree.size();
         let intrinsic = (
@@ -113,6 +165,7 @@ impl SvgDecoder {
             &SvgOptions {
                 resources_dir,
                 target_size,
+                pixel_budget,
             },
             size,
         )?;
@@ -184,13 +237,48 @@ fn resolve_target_size(
     // The area is computed in u64 because width and height can each approach
     // u32::MAX, whose product overflows usize.
     let area = (width as u64) * (height as u64);
-    if area > MAX_TARGET_PIXELS {
-        return Err(ImageErrors::ImageDecodeErrors(format!(
-            "SVG target size {width}x{height} ({area} pixels) exceeds the limit of {MAX_TARGET_PIXELS} pixels ({MAX_SVG_DECODE_BYTES} byte decode budget), reduce the --resize target or the intrinsic size",
-        )));
+    let budget = options.pixel_budget.unwrap_or(MAX_TARGET_PIXELS);
+    if area > budget {
+        return Err(size_limit_error(width, height, area, budget));
     }
 
     Ok((width, height))
+}
+
+/// Marker prefix identifying an SVG render-target rejection.
+///
+/// `zune_image::errors::ImageErrors` has no variant for "too large", and it is
+/// an external type this crate cannot extend. A string is the only channel
+/// available, so the one this decoder controls carries a stable marker and the
+/// numbers, and [`crate::error::classify_input`] turns it back into a
+/// structured failure. Prose alone would force the classifier to pattern-match
+/// a human-readable message, which breaks the moment the wording changes.
+pub const SIZE_LIMIT_MARKER: &str = "rimage-svg-size-limit:";
+
+/// Build the rejection for a render target that exceeds the pixel budget.
+fn size_limit_error(width: usize, height: usize, area: u64, budget: u64) -> ImageErrors {
+    ImageErrors::ImageDecodeErrors(format!(
+        "{SIZE_LIMIT_MARKER}{width}x{height}:{area}:{budget}: SVG target size {width}x{height} \
+         ({area} pixels) exceeds the limit of {budget} pixels, reduce the --resize target or \
+         the intrinsic size",
+    ))
+}
+
+/// Parse a [`SIZE_LIMIT_MARKER`] message back into its numbers.
+///
+/// Returns `(width, height, actual_pixels, allowed_pixels)`.
+pub fn parse_size_limit(message: &str) -> Option<(u64, u64, u64, u64)> {
+    let rest = message.strip_prefix(SIZE_LIMIT_MARKER)?;
+    // Fields are `WxH:actual:allowed`, terminated by the prose that follows.
+    let rest = rest.split_whitespace().next()?;
+
+    let mut fields = rest.split(':');
+    let dimensions = fields.next()?;
+    let actual = fields.next()?.parse().ok()?;
+    let allowed = fields.next()?.parse().ok()?;
+
+    let (width, height) = dimensions.split_once('x')?;
+    Some((width.parse().ok()?, height.parse().ok()?, actual, allowed))
 }
 
 impl DecoderTrait for SvgDecoder {
@@ -213,8 +301,17 @@ impl DecoderTrait for SvgDecoder {
         resvg::render(&self.tree, transform, &mut pixmap.as_mut());
 
         // tiny-skia stores premultiplied alpha while zune_image expects
-        // straight alpha.
-        let mut pixels = Vec::with_capacity(width * height * 4);
+        // straight alpha. Use checked_mul to avoid usize overflow on
+        // 32-bit targets or extremely large render targets.
+        let pixel_count = width
+            .checked_mul(height)
+            .and_then(|px| px.checked_mul(4))
+            .ok_or_else(|| {
+                ImageErrors::ImageDecodeErrors(format!(
+                    "SVG render target {width}x{height} overflows the output buffer size"
+                ))
+            })?;
+        let mut pixels = Vec::with_capacity(pixel_count);
         for pixel in pixmap.pixels() {
             let color = pixel.demultiply();
             pixels.extend_from_slice(&[color.red(), color.green(), color.blue(), color.alpha()]);
