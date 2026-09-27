@@ -1300,16 +1300,14 @@ fn main() -> std::process::ExitCode {
                         // output is never observable with the wrong time on it. This
                         // has to happen after the EXIF and APP1 rewrites above, which
                         // each touch the file and would push the time back to now.
-                        if let Some(mtime) = preserved_mtime
-                            && let Err(error) = filetime::set_file_mtime(&temporary.path, mtime)
-                        {
-                            // The image is already encoded, so a filesystem that
-                            // refuses the timestamp must not discard it over a clock.
-                            log::warn!(
-                                "{}: failed to preserve modification time on {}: {error}",
-                                input.display(),
-                                output.display()
-                            );
+                        //
+                        // A volume that refuses the timestamp abandons the file, the
+                        // same way a failed EXIF write does: publishing anyway would
+                        // hand back an output the user did not ask for and report it as
+                        // a success, while abandoning it leaves their original untouched.
+                        if let Some(mtime) = preserved_mtime {
+                            fail_pipeline!(state, filetime::set_file_mtime(&temporary.path, mtime)
+                                .map_err(|e| rimage::error::output_io_error(&output, &e)));
                         }
 
                         if let Some(backup_path) = backup_path.as_deref() {
